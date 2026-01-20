@@ -1,0 +1,37 @@
+@import "tailwindcss";
+
+/* Markdown styles */
+.prose {
+  max-width: none;
+}
+
+.prose pre {
+  background: #f4f4f4;
+  padding: 10px;
+  border-radius: 4px;
+  overflow-x: auto;
+}
+
+.prose code {
+  background: #f4f4f4;
+  padding: 2px 4px;
+  border-radius: 2px;
+}
+
+.prose h1, .prose h2, .prose h3 {
+  margin-top: 1em;
+  margin-bottom: 0.5em;
+}
+
+.prose p {
+  margin-bottom: 0.5em;
+}
+
+.prose ul, .prose ol {
+  margin-left: 1em;
+}
+
+.code-container {
+  position: relative;
+  margin: 1em 0;
+}
