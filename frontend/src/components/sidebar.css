@@ -1,0 +1,406 @@
+/* ===============================
+   THEME VARIABLES
+================================ */
+/* Default Theme: Light */
+:root {
+  /* Core Colors */
+  --bg-primary: #ffffff;
+  --bg-secondary: #f9f9f9;
+  --text-primary: #000000;
+  --text-secondary: #555555;
+  --accent-color: #000000;
+  --border-color: transparent; /* Removed all lines */
+  
+  /* Component Colors */
+  --sidebar-bg: var(--bg-primary);
+  --sidebar-text: var(--text-primary);
+  --sidebar-hover: #f0f0f0;
+  --input-bg: #f0f0f0;
+  --input-placeholder: #888888;
+  --scrollbar-thumb: #cccccc;
+  --overlay-bg: rgba(255, 255, 255, 0.8);
+  
+  /* Chat Colors */
+  --chat-sent-bg: #e0e0e0;
+  --chat-sent-text: #000000;
+  --chat-received-bg: #f0f0f0;
+  --chat-received-text: #000000;
+
+  /* Animation */
+  --transition-speed: 0.2s;
+  --animation-curve: ease-in-out;
+}
+
+/* System Preference for Dark Mode (when no theme is set) */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --bg-primary: #343541;
+    --bg-secondary: #444654;
+    --text-primary: #ececf1;
+    --text-secondary: #c5c5d2;
+    --accent-color: #ececf1;
+    --border-color: transparent;
+
+    --sidebar-bg: #202123;
+    --sidebar-text: var(--text-primary);
+    --sidebar-hover: #2a2b32;
+    --input-bg: #40414f;
+    --input-placeholder: #8e8ea0;
+    --scrollbar-thumb: #565869;
+    --overlay-bg: rgba(0, 0, 0, 0.6);
+
+    --chat-sent-bg: #444654;
+    --chat-sent-text: #ececf1;
+    --chat-received-bg: #202123;
+    --chat-received-text: #ececf1;
+  }
+}
+
+/* Explicit Dark Theme */
+[data-theme="dark"] {
+  --bg-primary: #000000;
+  --bg-secondary: #000000;
+  --text-primary: #ffffff;
+  --text-secondary: #999999;
+  --accent-color: #ffffff;
+  --border-color: transparent;
+
+  --sidebar-bg: #000000;
+  --sidebar-text: #ffffff;
+  --sidebar-hover: #1a1a1a;
+  --input-bg: #1a1a1a;
+  --input-placeholder: #666666;
+  --scrollbar-thumb: #333333;
+  --overlay-bg: rgba(255, 255, 255, 0.05);
+
+  --chat-sent-bg: #1a1a1a;
+  --chat-sent-text: #ffffff;
+  --chat-received-bg: #000000;
+  --chat-received-text: #ffffff;
+}
+
+/* Midnight Theme */
+[data-theme="midnight"] {
+  --bg-primary: #000033;
+  --bg-secondary: #000044;
+  --text-primary: #ffd700;
+  --text-secondary: #ccac00;
+  --accent-color: #ffd700;
+  --border-color: transparent;
+
+  --sidebar-bg: #000033;
+  --sidebar-text: #ffd700;
+  --sidebar-hover: #000055;
+  --input-bg: #000055;
+  --input-placeholder: #b39700;
+  --scrollbar-thumb: #000066;
+  --overlay-bg: rgba(0, 0, 50, 0.5);
+
+  --chat-sent-bg: #000066;
+  --chat-sent-text: #ffd700;
+  --chat-received-bg: #000044;
+  --chat-received-text: #ffd700;
+
+  --transition-speed: 0.3s;
+  --animation-curve: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ===============================
+   GLOBAL RESET (SAFE)
+================================ */
+* {
+  box-sizing: border-box !important;
+}
+
+body, #root, main, header, footer, .main-content, .flex.h-screen {
+  background-color: var(--bg-primary) !important;
+  color: var(--text-primary) !important;
+  transition: background-color var(--transition-speed) var(--animation-curve), color var(--transition-speed) var(--animation-curve);
+}
+
+/* ===============================
+   SIDEBAR CONTAINER
+================================ */
+aside {
+  background-color: var(--sidebar-bg) !important;
+  color: var(--sidebar-text) !important;
+  border-right: 1px solid var(--border-color) !important;
+  transition: background-color var(--transition-speed) var(--animation-curve), border-color var(--transition-speed) var(--animation-curve);
+}
+
+/* ===============================
+   SIDEBAR HEADER
+================================ */
+aside .p-4, aside .border-b, aside .border-t {
+  border-color: var(--border-color) !important;
+}
+
+aside h1 {
+  font-size: 16px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.3px !important;
+}
+
+/* Logo */
+aside img {
+  width: 32px !important;
+  height: 32px !important;
+  border-radius: 50% !important;
+  object-fit: cover !important;
+}
+
+/* Close Button (Mobile) */
+aside button svg {
+  color: var(--accent-color) !important;
+}
+
+/* ===============================
+   BUTTONS – COMMON
+================================ */
+aside button {
+  background: transparent !important;
+  color: var(--sidebar-text) !important;
+  border: none !important;
+  cursor: pointer !important;
+  border-radius: 8px !important;
+  font-size: 14px !important;
+  transition: background-color var(--transition-speed) var(--animation-curve), color var(--transition-speed) var(--animation-curve), transform 0.1s ease;
+}
+
+/* Hover effect */
+aside button:hover {
+  background-color: var(--sidebar-hover) !important;
+}
+
+/* ===============================
+   NEW CHAT BUTTON
+================================ */
+aside button.bg-gray-800 {
+  background-color: var(--input-bg) !important;
+  border: 1px solid var(--border-color) !important;
+}
+
+aside button.bg-gray-800:hover {
+  background-color: var(--sidebar-hover) !important;
+}
+
+/* Plus Icon */
+aside svg {
+  font-size: 14px !important;
+}
+
+/* ===============================
+   SECTION TITLES
+================================ */
+aside h3 {
+  color: var(--text-secondary) !important;
+  font-size: 11px !important;
+  letter-spacing: 0.08em !important;
+}
+
+/* ===============================
+   CHAT LIST ITEMS
+================================ */
+aside .truncate {
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+aside .text-sm {
+  font-size: 13px !important;
+}
+
+/* Chat item hover */
+aside .hover\:bg-gray-800:hover {
+  background-color: var(--sidebar-hover) !important;
+}
+
+/* ===============================
+   SCROLLBAR (ChatGPT style)
+================================ */
+aside ::-webkit-scrollbar {
+  width: 6px !important;
+}
+
+aside ::-webkit-scrollbar-track {
+  background: transparent !important;
+}
+
+aside ::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb) !important;
+  border-radius: 6px !important;
+}
+
+/* ===============================
+   MOBILE OVERLAY
+================================ */
+.fixed.inset-0 {
+  background-color: var(--overlay-bg) !important;
+}
+
+/* ===============================
+   REMOVE TAILWIND COLORS FORCEFULLY
+================================ */
+/* Remove backgrounds to allow theme to show */
+.bg-gray-900,
+.bg-gray-800,
+.bg-gray-700,
+.bg-white,
+.bg-black,
+.bg-gradient-to-br {
+  background-color: transparent !important;
+  background-image: none !important;
+}
+
+/* Remove borders */
+.border-gray-700,
+.border-gray-800,
+.border-gray-200,
+.border-t,
+.border-b,
+.border-r {
+  border-color: var(--border-color) !important;
+}
+
+/* Remove shadows that look like lines */
+.shadow-lg, .shadow-md {
+  box-shadow: none !important;
+}
+
+/* Text Colors */
+.text-gray-400,
+.text-gray-300,
+.text-gray-500,
+.text-gray-600 {
+  color: var(--text-secondary) !important;
+}
+
+.text-indigo-400,
+.text-indigo-600,
+.text-black,
+.text-white {
+  color: var(--text-primary) !important;
+}
+
+/* Ensure main headings and text adapt */
+main h1, main h2, main h3, main p, main span, .text-3xl, .text-4xl, .text-2xl, .text-xl {
+  color: var(--text-primary) !important;
+}
+
+/* ===============================
+   INPUTS & TEXTAREAS
+================================ */
+textarea, input[type="text"], select {
+  background-color: var(--input-bg) !important;
+  color: var(--text-primary) !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+textarea::placeholder, input::placeholder {
+  color: var(--input-placeholder) !important;
+}
+
+/* ===============================
+   RESPONSIVE FIXES
+================================ */
+@media (max-width: 768px) {
+  aside {
+    width: 85% !important;
+  }
+}
+
+/* ===============================
+   SETTINGS MODAL & BUTTON
+================================ */
+.settings-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background-color: var(--overlay-bg);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+  backdrop-filter: blur(2px);
+}
+
+@keyframes modalFadeIn {
+  from { opacity: 0; transform: scale(0.95) translateY(10px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.bg-gray-900{
+  background-color: white !important;
+}
+
+.bg-gray-800 {
+    background-color: white !important;
+}
+
+
+
+.settings-modal {
+  background-color: white;
+  border: 1px solid var(--text-secondary); /* Keep border for modal only */
+  border-radius: 12px;
+  padding: 24px;
+  width: 90%;
+  max-width: 400px;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+  color: var(--sidebar-text);
+  animation: modalFadeIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.settings-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.settings-header button:hover {
+  color: var(--sidebar-text) !important;
+}
+
+.theme-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+
+.theme-option {
+  background-color: transparent;
+  border: 1px solid var(--text-secondary);
+  border-radius: 8px;
+  padding: 12px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  color: var(--sidebar-text);
+  transition: all var(--transition-speed) var(--animation-curve);
+}
+
+.theme-option:hover, .theme-option.active {
+  background-color: var(--sidebar-hover);
+  border-color: var(--accent-color);
+}
+
+/* ===============================
+   DOWNLOAD MENU
+================================ */
+.download-menu {
+  background-color: var(--sidebar-bg);
+  border: 1px solid var(--text-secondary);
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+}
+
+.download-menu-item {
+  color: var(--sidebar-text);
+}
+
+.download-menu-item:hover {
+  background-color: var(--sidebar-hover);
+}

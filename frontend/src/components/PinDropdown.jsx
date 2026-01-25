@@ -20,12 +20,12 @@ const PinDropdown = ({ onSelect }) => {
   const options = [
     { label: "Document", icon: <FaFile size={16} />, color: "text-blue-600 dark:text-blue-400", bg: "bg-blue-100 dark:bg-blue-900/50", accept: "*/*" },
     { label: "Image", icon: <FaFileImage size={16} />, color: "text-green-600 dark:text-green-400", bg: "bg-green-100 dark:bg-green-900/50", accept: "image/*" },
-    { label: "Video", icon: <FaFileVideo size={16} />, color: "text-red-600 dark:text-red-400", bg: "bg-red-100 dark:bg-red-900/50", accept: "video/*" },
+    // { label: "Video", icon: <FaFileVideo size={16} />, color: "text-red-600 dark:text-red-400", bg: "bg-red-100 dark:bg-red-900/50", accept: "video/*" },
     { label: "Audio", icon: <FaFileAudio size={16} />, color: "text-yellow-600 dark:text-yellow-400", bg: "bg-yellow-100 dark:bg-yellow-900/50", accept: "audio/*" },
   ];
 
   return (
-    <div className="absolute bottom-full left-0 mb-2 w-48 bg-white dark:bg-gray-800 rounded-xl shadow-2xl border border-gray-100 dark:border-gray-700 overflow-hidden z-50">
+    <div className="absolute bottom-full left-0 mb-2 w-40 sm:w-48 max-h-96 overflow-y-auto bg-white dark:bg-gray-800 rounded-xl shadow-2xl border border-gray-100 dark:border-gray-700 z-50">
       <input
         type="file"
         multiple
@@ -43,7 +43,9 @@ const PinDropdown = ({ onSelect }) => {
             <div className={`p-2 rounded-full ${opt.bg} ${opt.color} group-hover:scale-110 transition-transform`}>
               {opt.icon}
             </div>
-            <span className="text-gray-700 dark:text-gray-300 font-medium text-sm">{opt.label}</span>
+<span className="text-black dark:text-gray-300 font-medium text-sm">
+  {opt.label}
+</span>
           </button>
         ))}
       </div>

@@ -8,6 +8,9 @@ import {
   FaFileAudio,
   FaFileVideo,
   FaFileImage,
+  FaBug,
+  FaGoogle,
+  FaArrowRight,
 } from "react-icons/fa";
 
 import ChatWindow from "./components/ChatWindow";
@@ -16,10 +19,30 @@ import MenuBar from "./components/MenuBar";
 import Sidebar from "./components/Sidebar";
 import "./App.css";
 
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+
 export default function App() {
+  const generateSessionId = () => Date.now().toString(36) + Math.random().toString(36).substr(2);
+
   // ------------------ STATE ------------------
-  const [messages, setMessages] = useState([]);
+  const [messages, setMessages] = useState(() => {
+    try {
+      const saved = localStorage.getItem("chat_messages");
+      return saved ? JSON.parse(saved) : [];
+    } catch (error) {
+      console.error("Failed to load messages from localStorage:", error);
+      return [];
+    }
+  });
   const [input, setInput] = useState("");
+  const [sessionId, setSessionId] = useState(() => {
+    try {
+      const saved = localStorage.getItem("chat_session_id");
+      return saved || generateSessionId();
+    } catch (error) {
+      return generateSessionId();
+    }
+  });
   const [pinOpen, setPinOpen] = useState(false);
   const [recording, setRecording] = useState(false);
   const [micBlink, setMicBlink] = useState(false);
@@ -36,6 +59,14 @@ export default function App() {
   const [feedbackType, setFeedbackType] = useState("Feedback");
   const [feedbackText, setFeedbackText] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [showBugReport, setShowBugReport] = useState(false);
+  const [bugText, setBugText] = useState("");
+  const [isProcessing, setIsProcessing] = useState(false);
+  const abortControllerRef = useRef(null);
+  const [language, setLanguage] = useState("en-US");
+  const [manualEmail, setManualEmail] = useState("");
+  const [chatHistory, setChatHistory] = useState([]);
+  const [model, setModel] = useState("gpt-4o-mini");
 
   // ------------------ REFS ------------------
   const bottomRef = useRef(null);
@@ -73,15 +104,23 @@ export default function App() {
   // ------------------ AUTO SCROLL ------------------
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [messages.length]);
+
+  // ------------------ PERSISTENCE ------------------
+  useEffect(() => {
+    localStorage.setItem("chat_messages", JSON.stringify(messages));
+    localStorage.setItem("chat_session_id", sessionId);
+  }, [messages, sessionId]);
 
   // ------------------ HANDLE ACCOUNT ------------------
-  const handleAccount = (user) => {
+  const handleAccount = async (user) => {
     if (!user) {
       setIsLoggedIn(false);
       setEmail("");
       setName("");
       localStorage.removeItem('user');
+      // Logout from backend session
+      await fetch(`${API_URL}/auth/google/logout`);
     } else {
       setIsLoggedIn(true);
       setEmail(user.email);
@@ -89,11 +128,18 @@ export default function App() {
       setShowLoginModal(false);  // Close modal on login
 
       // 🔐 store email in DB
-      fetch("http://127.0.0.1:8000/auth/store-user", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: user.email }),
-      });
+      try {
+        const res = await fetch(`${API_URL}/auth/google/store-user`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: user.email, name: user.name || "" }),
+        });
+        if (!res.ok) throw new Error("Failed to store user data");
+        console.log("User stored successfully");
+        fetchChatHistory(user.email);
+      } catch (error) {
+        console.error("Error storing user:", error);
+      }
     }
   };
 
@@ -117,44 +163,135 @@ export default function App() {
     setAttachedFiles((prev) => prev.filter((_, i) => i !== idx));
   };
 
-  // ------------------ CHECK URL PARAM FOR LOGIN ------------------
-  /*
+  // ------------------ LOGIN MODAL & AUTH CHECK ------------------
+  const [showLoginModal, setShowLoginModal] = useState(false);
+
   useEffect(() => {
+    // 1. Check URL params (Callback from Google)
     const params = new URLSearchParams(window.location.search);
     const mail = params.get("email");
     const uname = params.get("name");
+    
     if (mail) {
-      const user = { email: mail, name: uname };
+      const user = { email: mail, name: uname || "" };
       handleAccount(user);
       localStorage.setItem('user', JSON.stringify(user));
+      // Clean URL
       window.history.replaceState({}, document.title, "/");
     } else {
-      // Check localStorage for persisted login
+      // 2. Check localStorage for persisted login
       const savedUser = localStorage.getItem('user');
       if (savedUser) {
         handleAccount(JSON.parse(savedUser));
+      } else {
+        // 3. Show modal if not logged in
+        setShowLoginModal(true);
       }
     }
   }, []);
-  */
 
-  // ------------------ LOGIN MODAL ------------------
-  const [showLoginModal, setShowLoginModal] = useState(false);
-
-  /*
-  useEffect(() => {
-    const savedUser = localStorage.getItem('user');
-    if (!savedUser && !isLoggedIn && !showLoginModal) {
-      // Delay to allow state to set
-      setTimeout(() => setShowLoginModal(true), 100);
-    } else if (isLoggedIn) {
-      setShowLoginModal(false);
+  // ------------------ CHAT HISTORY ------------------
+  const fetchChatHistory = async (userEmail) => {
+    if (!userEmail) return;
+    try {
+      const res = await fetch(`${API_URL}/chat/history?email=${userEmail}`);
+      const data = await res.json();
+      setChatHistory(data);
+    } catch (error) {
+      console.error("Failed to fetch history:", error);
     }
-  }, [isLoggedIn, showLoginModal]);
-  */
+  };
 
-  const handleLoginClick = () => {
-    // window.location.href = "http://127.0.0.1:8000/auth/google/login";
+  const handleNewChat = () => {
+    setMessages([]);
+    setSessionId(generateSessionId());
+    if (email) fetchChatHistory(email);
+  };
+
+  const handleLoadChat = async (sid) => {
+    if (!email) return;
+    try {
+      const res = await fetch(`${API_URL}/chat/history/${sid}?email=${email}`);
+      const data = await res.json();
+      // Map backend format to frontend format
+      const formatted = [];
+      
+      for (const msg of data) {
+        // If user message is "Continue generating", skip adding it to the UI
+        if (msg.role === "user" && msg.text === "Continue generating") {
+          continue;
+        }
+        
+        // If it's an assistant message following a skipped "Continue", append to previous assistant message
+        if (msg.role === "assistant" && formatted.length > 0 && formatted[formatted.length - 1].role === "assistant") {
+          formatted[formatted.length - 1].text += msg.text;
+          continue;
+        }
+
+        formatted.push({
+          ...msg,
+          files: [], 
+          isHidden: false
+        });
+      }
+
+      setMessages(formatted);
+      setSessionId(sid);
+    } catch (error) {
+      console.error("Failed to load chat:", error);
+    }
+  };
+
+  const handleUpdateChat = async (sid, updates) => {
+    if (!email) return;
+    try {
+      await fetch(`${API_URL}/chat/history/${sid}?email=${email}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updates),
+      });
+      // Refresh history to reflect changes
+      fetchChatHistory(email);
+    } catch (error) {
+      console.error("Failed to update chat:", error);
+    }
+  };
+
+  const handleDeleteChat = async (sid) => {
+    if (!email) return;
+    try {
+      await fetch(`${API_URL}/chat/history/${sid}?email=${email}`, {
+        method: "DELETE",
+      });
+      setChatHistory((prev) => prev.filter((c) => c.session_id !== sid));
+      if (sessionId === sid) {
+        setMessages([]);
+        setSessionId(generateSessionId());
+      }
+    } catch (error) {
+      console.error("Failed to delete chat:", error);
+    }
+  };
+  const textareaRef = useRef(null);
+
+  const handleGoogleLogin = () => {
+    window.location.href = `${API_URL}/auth/google/login`;
+  };
+
+  const handleManualLogin = async () => {
+    if (!manualEmail.trim()) return;
+    const user = { email: manualEmail, name: "" };
+    await handleAccount(user);
+    localStorage.setItem('user', JSON.stringify(user));
+  };
+
+  // ------------------ AUTH ACTION (MENU BUTTON) ------------------
+  const handleAuthAction = () => {
+    if (isLoggedIn) {
+      handleAccount(null); // Logout
+    } else {
+      setShowLoginModal(true); // Show Popup
+    }
   };
 
   // ------------------ MENU HANDLERS ------------------
@@ -178,7 +315,7 @@ export default function App() {
     }
 
     try {
-      await fetch("http://127.0.0.1:8000/contact-feedback", {
+      await fetch(`${API_URL}/contact-feedback`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -207,7 +344,7 @@ export default function App() {
     );
 
     try {
-      await fetch("http://127.0.0.1:8000/message-feedback", {
+      await fetch(`${API_URL}/message-feedback`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -222,32 +359,111 @@ export default function App() {
     }
   };
 
+  // ------------------ BUG REPORT ------------------
+  const handleBugSubmit = async () => {
+    if (!bugText.trim()) return;
+    try {
+      await fetch(`${API_URL}/contact-feedback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email,
+          name,
+          type: "Bug Report",
+          message: bugText,
+        }),
+      });
+      setBugText("");
+      setShowBugReport(false);
+      alert("Bug reported successfully!");
+    } catch (error) {
+      console.error("Error reporting bug:", error);
+      alert("Failed to report bug.");
+    }
+  };
+  
+
+  // Handle edited message - resend to AI
+  const handleEditSave = (messageId, editedText) => {
+    console.log('📝 Edited message:', { messageId, editedText });
+    // Send edited message to AI
+    sendMessage(editedText);
+  };
+
+  // Stop generation handler
+  const handleStopGeneration = () => {
+    console.log('⏹️ Stopping response generation');
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+      setIsProcessing(false);
+      
+      // Mark the current message as complete even if interrupted
+      setMessages((prev) => {
+        const msgs = [...prev];
+        if (msgs[msgs.length - 1]?.role === "assistant") {
+          msgs[msgs.length - 1].isComplete = true;
+        }
+        return msgs;
+      });
+    }
+  };
+
   // ------------------ SEND MESSAGE ------------------
-  const sendMessage = async () => {
-    if (!input.trim() && attachedFiles.length === 0) return;
+  const sendMessage = async (overrideText = null) => {
+    if (isProcessing) return;
+    const textToSend = typeof overrideText === 'string' ? overrideText : input.trim();
+    if (!textToSend && attachedFiles.length === 0) return;
+    
+    const isContinuation = textToSend === "Continue generating";
 
-    const newUserMsg = {
-      id: Date.now(),
-      role: "user",
-      text: input.trim(),
-      files: attachedFiles, // Pass full file objects
-    };
+    const filesToSend = attachedFiles;
+    let previousText = "";
+    let updatedMessages = [...messages];
 
-    const updatedMessages = [...messages, newUserMsg];
-    setMessages(updatedMessages);
+    if (isContinuation) {
+      // Capture previous text to append to
+      const lastMsg = messages[messages.length - 1];
+      if (lastMsg?.role === "assistant") {
+        previousText = lastMsg.text;
+      }
+      // We do NOT add the "Continue" user message to the UI state here
+      // This keeps the UI clean immediately
+    } else {
+      // Normal flow: Add user message
+      const newUserMsg = {
+        id: Date.now(),
+        role: "user",
+        text: textToSend,
+        files: filesToSend.map(f => ({ name: f.name, type: f.type })),
+        isHidden: false,
+      };
+      updatedMessages = [...messages, newUserMsg];
+      setMessages(updatedMessages);
+    }
+
     setInput("");
+    setAttachedFiles([]);
+    if (textareaRef.current) {
+  textareaRef.current.style.height = "auto";
+}
+    setIsProcessing(true);
+
+    // Create new abort controller for this request
+    abortControllerRef.current = new AbortController();
 
     try {
       const uploadedFiles = [];
 
-      for (const file of attachedFiles) {
+      for (const file of filesToSend) {
         const formData = new FormData();
         formData.append("file", file);
+        if (email) formData.append("email", email);
 
         const endpoint =
           file.type.startsWith("audio/") ? "transcribe-audio" : "upload-file";
 
-        const res = await fetch(`http://127.0.0.1:8000/${endpoint}`, {
+        const res = await fetch(`${API_URL}/${endpoint}`, {
           method: "POST",
           body: formData,
         });
@@ -259,68 +475,157 @@ export default function App() {
         });
       }
 
-      let combined = input.trim();
+      let combined = textToSend;
       uploadedFiles.forEach((f) => {
         combined += `\n\n[File: ${f.name}]\n${f.text}`;
       });
 
       const conversation = [
-        { role: "system", content: "You are a helpful AI assistant." },
+        { role: "system", content: "You are a helpful AI assistant. When asked to process files (beautify, ATS resume, format), rewrite the content completely in the requested format. Wrap the processed content in a markdown code block (```). Do NOT include conversational text inside the code block. Provide a link '[Download Processed File](#download)'." },
         ...messages.map((m) => ({ role: m.role, content: m.text })),
         { role: "user", content: combined },
       ];
+      // Only add a new assistant placeholder if it's NOT a continuation
+      // If it IS a continuation, we will append to the existing last message in the stream loop
+      if (!isContinuation) {
+        setMessages([...updatedMessages, { id: Date.now(), role: "assistant", text: "", isComplete: false, image_url: null }]);
+      }
 
-      setMessages([...updatedMessages, { id: Date.now(), role: "assistant", text: "" }]);
-
-      const response = await fetch("http://127.0.0.1:8000/chat", {
+      const response = await fetch(`${API_URL}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: conversation }),
+        body: JSON.stringify({ messages: conversation, email, session_id: sessionId, model }),
+        signal: abortControllerRef.current.signal,
       });
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let accumulated = "";
+      let buffer = "";
+      let imageUrls = [];
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
 
-        const chunk = decoder.decode(value);
-        const lines = chunk.split("\n");
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop();
 
         for (const line of lines) {
           if (line.startsWith("data: ")) {
-            const data = JSON.parse(line.slice(6));
-            if (data.chunk) {
-              accumulated += data.chunk;
-              setMessages((prev) => {
-                const msgs = [...prev];
-                msgs[msgs.length - 1].text = accumulated;
-                return msgs;
-              });
-            }
-            if (data.final) {
-              setMessages((prev) => {
-                const msgs = [...prev];
-                msgs[msgs.length - 1].text = data.final;
-                msgs[msgs.length - 1].image_url = data.image_url || null;
-                msgs[msgs.length - 1].isComplete = true;
-                return msgs;
-              });
+            try {
+              const data = JSON.parse(line.slice(6));
+              
+              // Handle typed events
+              if (data.type === "images") {
+                // Images sent first (typed event)
+                imageUrls = data.data || [];
+                setMessages((prev) => {
+                  const msgs = [...prev];
+                  const lastIdx = isContinuation ? msgs.findLastIndex(m => m.role === "assistant") : msgs.length - 1;
+                  if (lastIdx !== -1) {
+                    msgs[lastIdx].image_url = imageUrls;
+                  }
+                  return msgs;
+                });
+              } else if (data.type === "chunk") {
+                // Text chunks (typed event)
+                accumulated += data.data;
+                setMessages((prev) => {
+                  const msgs = [...prev];
+                  if (isContinuation) {
+                    const lastIdx = msgs.findLastIndex(m => m.role === "assistant");
+                    if (lastIdx !== -1) {
+                      msgs[lastIdx] = {
+                        ...msgs[lastIdx],
+                        text: previousText + accumulated
+                      };
+                    }
+                  } else {
+                    msgs[msgs.length - 1].text = accumulated;
+                  }
+                  return msgs;
+                });
+              } else if (data.type === "final") {
+                // Final response (typed event)
+                console.log('✅ Final response received with', imageUrls.length, 'images');
+                setMessages((prev) => {
+                  const msgs = [...prev];
+                  const lastIdx = isContinuation ? msgs.findLastIndex(m => m.role === "assistant") : msgs.length - 1;
+                  if (lastIdx !== -1) {
+                    msgs[lastIdx].text = previousText + data.data;
+                    msgs[lastIdx].image_url = data.images || imageUrls;
+                    msgs[lastIdx].isComplete = true;
+                    msgs[lastIdx].finishReason = data.finish_reason;
+                    msgs[lastIdx].message_id = data.message_id;
+                  }
+                  return msgs;
+                });
+              }
+              // Legacy format support (for backward compatibility)
+              else if (data.chunk) {
+                accumulated += data.chunk;
+                setMessages((prev) => {
+                  const msgs = [...prev];
+                  if (isContinuation) {
+                    const lastIdx = msgs.findLastIndex(m => m.role === "assistant");
+                    if (lastIdx !== -1) {
+                      msgs[lastIdx] = {
+                        ...msgs[lastIdx],
+                        text: previousText + accumulated
+                      };
+                    }
+                  } else {
+                    msgs[msgs.length - 1].text = accumulated;
+                  }
+                  return msgs;
+                });
+              } else if (data.final) {
+                console.log('✅ Legacy format: Final response with images');
+                setMessages((prev) => {
+                  const msgs = [...prev];
+                  const lastIdx = isContinuation ? msgs.findLastIndex(m => m.role === "assistant") : msgs.length - 1;
+                  if (lastIdx !== -1) {
+                    msgs[lastIdx].text = previousText + data.final;
+                    msgs[lastIdx].image_url = data.image_url || imageUrls || null;
+                    msgs[lastIdx].isComplete = true;
+                    msgs[lastIdx].finishReason = data.finish_reason;
+                    msgs[lastIdx].message_id = data.message_id;
+                  }
+                  return msgs;
+                });
+              }
+            } catch (e) {
+              console.error("Error parsing stream chunk:", e);
             }
           }
         }
       }
-    } catch {
-      setMessages((prev) => {
-        const msgs = [...prev];
-        msgs[msgs.length - 1].text = "Error: Backend connection failed";
-        return msgs;
-      });
+    } catch (err) {
+      // Only show error if it's not an abort error (user clicked stop)
+      if (err.name !== 'AbortError') {
+        console.error('Error during response:', err);
+        setMessages((prev) => {
+          const msgs = [...prev];
+          msgs[msgs.length - 1].text = "Error: Backend connection failed";
+          return msgs;
+        });
+      } else {
+        console.log('Response generation stopped by user');
+        // Mark message as complete with stopped status
+        setMessages((prev) => {
+          const msgs = [...prev];
+          if (msgs[msgs.length - 1]?.role === "assistant") {
+            msgs[msgs.length - 1].isComplete = true;
+          }
+          return msgs;
+        });
+      }
+    } finally {
+      setIsProcessing(false);
+      abortControllerRef.current = null;
     }
-
-    setAttachedFiles([]);
   };
 
   // ------------------ MICROPHONE ------------------
@@ -328,7 +633,7 @@ export default function App() {
     const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
     recognition.continuous = true;
     recognition.interimResults = true;
-    recognition.lang = "en-US";
+    recognition.lang = language;
 
     recognition.onresult = (e) => {
       let transcript = "";
@@ -356,17 +661,9 @@ export default function App() {
   // ------------------ CAMERA ------------------
   useEffect(() => {
     let stream = null;
-    let animationId = null;
-    let src = null;
-    let cap = null;
+    let isMounted = true;
 
     if (cameraOpen) {
-      if (!opencvReady) {
-        alert("OpenCV is loading... please wait a moment and try again.");
-        setCameraOpen(false);
-        return;
-      }
-
       const enableStream = async () => {
         try {
           if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -374,53 +671,26 @@ export default function App() {
           }
           const mediaStream = await navigator.mediaDevices.getUserMedia({ video: true });
 
+          if (!isMounted) {
+            // Component unmounted while waiting for camera; stop immediately to prevent lock
+            mediaStream.getTracks().forEach((track) => track.stop());
+            return;
+          }
+
           stream = mediaStream;
           if (videoRef.current) {
             videoRef.current.srcObject = stream;
             await videoRef.current.play();
-
-            const processVideo = () => {
-              if (!cameraOpen || !videoRef.current) return;
-
-              const width = videoRef.current.videoWidth;
-              const height = videoRef.current.videoHeight;
-
-              // Wait for video to have valid dimensions
-              if (width === 0 || height === 0) {
-                animationId = requestAnimationFrame(processVideo);
-                return;
-              }
-
-              // Initialize OpenCV objects if not already done
-              if (!src) {
-                if (canvasRef.current) {
-                  canvasRef.current.width = width;
-                  canvasRef.current.height = height;
-                }
-                src = new window.cv.Mat(height, width, window.cv.CV_8UC4);
-                cap = new window.cv.VideoCapture(videoRef.current);
-              }
-
-              try {
-                // Read frame from video and show on canvas
-                if (cap && src) {
-                  cap.read(src);
-                  window.cv.imshow(canvasRef.current, src);
-                }
-              } catch (err) {
-                console.error("OpenCV processing error:", err);
-              }
-              animationId = requestAnimationFrame(processVideo);
-            };
-            requestAnimationFrame(processVideo);
           }
         } catch (err) {
+          if (!isMounted) return;
           console.error("Camera error:", err);
-          // let msg = "Unable to access camera.";
+          let msg = "Unable to access camera.";
           if (err.name === "NotAllowedError") msg = "Camera permission denied. Please allow access in browser settings.";
           else if (err.name === "NotFoundError") msg = "No camera device found.";
-          // else if (err.name === "NotReadableError") msg = "Camera is currently in use by another application.";
+          else if (err.name === "NotReadableError") msg = "Camera is currently in use by another application.";
           else if (err.message === "Camera API not available") msg = "Camera access requires a secure connection (HTTPS) or localhost.";
+          else msg = `Unable to access camera: ${err.name} (${err.message})`;
           
           alert(msg);
           setCameraOpen(false);
@@ -430,17 +700,15 @@ export default function App() {
     }
 
     return () => {
+      isMounted = false;
       if (stream) {
         stream.getTracks().forEach((track) => track.stop());
       }
-      if (animationId) cancelAnimationFrame(animationId);
-      if (src) src.delete();
-      // cap cleanup is handled by JS GC usually, but we stop using it
       if (videoRef.current) {
         videoRef.current.srcObject = null;
       }
     };
-  }, [cameraOpen, opencvReady]);
+  }, [cameraOpen]);
 
   const handleCameraClick = () => {
     setCameraOpen(true);
@@ -448,9 +716,18 @@ export default function App() {
 
   const handleCapture = () => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    const video = videoRef.current;
+    if (!canvas || !video) return;
     
-    // Canvas already contains the OpenCV processed image
+    // Draw the current frame from the video to the canvas.
+    const context = canvas.getContext('2d');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    // Flip the canvas context to match the mirrored video preview
+    context.translate(canvas.width, 0);
+    context.scale(-1, 1);
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
     canvas.toBlob((blob) => {
       if (blob) {
         const file = new File([blob], `capture_${Date.now()}.png`, { type: 'image/png' });
@@ -463,23 +740,38 @@ export default function App() {
   // ------------------ RENDER ------------------
   return (
     <div className="flex h-screen bg-gradient-to-br from-blue-50 to-indigo-100 overflow-hidden">
-      <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
-      <div className="flex-1 flex flex-col h-full relative min-w-0">
-      <MenuBar
-        onShare={handleShare}
-        onContact={handleContact}
-        onLogin={handleAccount}
+      <Sidebar 
+        isOpen={sidebarOpen} 
+        onClose={() => setSidebarOpen(false)} 
         isLoggedIn={isLoggedIn}
-        email={email}
         name={name}
-        onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
+        email={email}
+        onLogin={handleAuthAction}
+        chatHistory={chatHistory}
+        onNewChat={handleNewChat}
+        onLoadChat={handleLoadChat}
+        onDeleteChat={handleDeleteChat}
+        onUpdateChat={handleUpdateChat}
       />
+      <div className="flex-1 flex flex-col h-full relative min-w-0">
+      <div className="sticky top-0 z-30 bg-white">
+  <MenuBar
+    onShare={handleShare}
+    onContact={handleContact}
+    onLogin={handleAuthAction}
+    isLoggedIn={isLoggedIn}
+    email={email}
+    name={name}
+    onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
+  />
+</div>
 
-      <div className="flex-1 flex justify-center overflow-hidden">
-        <div className="w-full flex flex-col bg-white rounded-lg shadow-lg overflow-hidden">
-          <ChatWindow messages={messages} bottomRef={bottomRef} onFeedback={handleMessageFeedback} />
+      <div className="flex-1 flex justify-center overflow-hidden min-h-0">
+        <div className="w-full flex flex-col bg-white rounded-lg shadow-lg overflow-hidden min-h-0">
+          <ChatWindow messages={messages.filter(m => !m.isHidden)} bottomRef={bottomRef} onFeedback={handleMessageFeedback} onEditSave={handleEditSave} />
         </div>
       </div>
+      
 
       {/* CONTACT MODAL */}
       {showContact && (
@@ -502,6 +794,7 @@ export default function App() {
               placeholder="Type your message..."
               value={feedbackText}
               onChange={(e) => setFeedbackText(e.target.value)}
+              
             />
 
             <div className="flex justify-end gap-2 mt-4">
@@ -541,8 +834,68 @@ export default function App() {
         </div>
       )}
 
+      {/* BUG REPORT FLOATING BUTTON */}
+      {!showBugReport && (
+        <button
+          onClick={() => setShowBugReport(true)}
+          className="absolute bottom-20 right-6 bg-red-500 text-white p-3 rounded-full shadow-lg hover:bg-red-600 transition-all z-40"
+          title="Report a Bug"
+        >
+          <FaBug size={20} />
+        </button>
+      )}
+
+      {/* BUG REPORT POPUP */}
+      {showBugReport && (
+        <>
+          <div 
+            className="fixed inset-0 bg-black/60 z-40 md:hidden"
+            onClick={() => setShowBugReport(false)}
+          />
+          <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[90%] max-w-sm bg-white p-4 rounded-xl shadow-2xl border border-red-100 z-50 md:translate-x-0 md:translate-y-0 md:top-auto md:left-auto md:absolute md:bottom-20 md:right-6 md:w-80">
+          <div className="flex justify-between items-center mb-2">
+            <h3 className="font-bold text-red-600 flex items-center gap-2">
+              <FaBug /> Report Issue
+            </h3>
+            <button 
+              onClick={() => setShowBugReport(false)}
+              className="text-gray-400 hover:text-gray-600"
+            >
+              {'\u00D7'}
+            </button>
+          </div>
+          <textarea
+            className="w-full border border-gray-200 p-3 rounded-lg text-sm mb-3 h-32 resize-none focus:ring-2 focus:ring-red-500 focus:border-transparent outline-none bg-gray-50"
+            placeholder="Describe the bug or issue..."
+            value={bugText}
+            onChange={(e) => setBugText(e.target.value)}
+          />
+          <div className="flex justify-end">
+            <button
+              onClick={handleBugSubmit}
+              className="bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-red-700 transition-colors shadow-md"
+            >
+              Submit Report
+            </button>
+          </div>
+        </div>
+        </>
+      )}
+
+      {/* CONTINUE BUTTON */}
+      {messages.length > 0 && messages[messages.length - 1].role === "assistant" && !isProcessing && messages[messages.length - 1].finishReason === "length" && (
+        <div className="absolute bottom-24 left-1/2 transform -translate-x-1/2 z-40">
+          <button
+            onClick={() => sendMessage("Continue generating")}
+            className="bg-white text-indigo-600 border border-indigo-200 px-4 py-2 rounded-full shadow-lg hover:bg-indigo-50 transition-all text-sm font-medium flex items-center gap-2"
+          >
+            Continue generating <FaArrowRight size={12} />
+          </button>
+        </div>
+      )}
+
       {/* FOOTER */}
-      <footer className="flex p-2 bg-white border-t border-gray-200 items-center gap-1 sm:gap-2">
+      <footer className="sticky bottom-0 z-30 flex p-2 bg-white border-t border-gray-200 items-center gap-1 sm:gap-2">
         <div className="pin-container relative flex-shrink-0">
           <button
             onClick={(e) => {
@@ -556,13 +909,45 @@ export default function App() {
           {pinOpen && <PinDropdown onSelect={handleFilesSelect} />}
         </div>
 
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && sendMessage()}
-          className="flex-1 min-w-0 py-2 px-3 text-sm border rounded-full bg-gray-50 text-black placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all"
-          placeholder="Type your prompt..."
-        />
+        {/* Model Selector */}
+        <select 
+          value={model} 
+          onChange={(e) => setModel(e.target.value)}
+          className="text-xs bg-gray-100 border-0 rounded-md px-2 py-1 text-gray-600 focus:ring-0 cursor-pointer hidden sm:block"
+          title="Select AI Model"
+        >
+          <option value="gpt-4o-mini">GPT-4o Mini</option>
+          <option value="gpt-4o">GPT-4o</option>
+          <option value="gpt-4-turbo">GPT-4.1 (Turbo)</option>
+        </select>
+
+ <textarea
+  ref={textareaRef}
+  value={input}
+  onChange={(e) => setInput(e.target.value)}
+  onInput={(e) => {
+    e.target.style.height = "auto";
+    e.target.style.height = Math.min(e.target.scrollHeight, 200) + "px";
+  }}
+  onKeyDown={(e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  }}
+  rows={1}
+  placeholder="Type your prompt..."
+  className="flex-1 min-w-0 resize-none py-2 px-4 text-sm border rounded-2xl 
+    bg-gray-50 dark:bg-gray-800 
+    text-black dark:text-white 
+    placeholder-gray-500 dark:placeholder-gray-400
+    focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all
+    overflow-y-auto max-h-[400px]"
+/>
+
+
+
+
 
         <button
           onClick={recording ? stopMic : startMic}
@@ -574,17 +959,30 @@ export default function App() {
         </button>
 
         <button
-          onClick={handleCameraClick}
-          className="p-2 bg-green-100 text-green-600 rounded-full hover:bg-green-200 flex-shrink-0 transition-all"
-        >
-          <FaCamera size={18} />
-        </button>
+  onClick={() => alert("Coming Soon")} // or use a toast/modal here
+  className="your-camera-button-classes"
+>
+  {/* Camera Icon */}
+</button>
+
 
         <button
-          onClick={sendMessage}
-          className="p-2 bg-indigo-600 text-white rounded-full hover:bg-indigo-700 flex-shrink-0 transition-all shadow-md"
+          onClick={() => isProcessing ? handleStopGeneration() : sendMessage(null)}
+          className={`p-2 rounded-full flex-shrink-0 transition-all shadow-md ${
+            isProcessing 
+              ? "bg-red-500 text-white hover:bg-red-600" 
+              : "bg-indigo-600 text-white hover:bg-indigo-700"
+          }`}
+          title={isProcessing ? "Stop generation" : "Send message"}
         >
-          <FaPaperPlane size={16} className="ml-0.5" />
+          {isProcessing ? (
+            <>
+              <span className="inline-block mr-1">⏹</span>
+              
+            </>
+          ) : (
+            <FaPaperPlane size={16} className="ml-0.5" />
+          )}
         </button>
       </footer>
 
@@ -602,11 +1000,11 @@ export default function App() {
                   videoRef.current.play().catch(e => console.error("Auto-play error:", e));
                 }
               }}
-              className="absolute opacity-0 pointer-events-none" // Hide video visually but keep in DOM
+              className="w-full h-auto object-cover transform scale-x-[-1] rounded-lg"
             />
             <canvas 
               ref={canvasRef} 
-              className="w-full h-auto object-cover transform scale-x-[-1] rounded-lg"
+              className="hidden"
             />
             <div className="absolute bottom-6 left-0 right-0 flex justify-center gap-8">
               <button
@@ -628,20 +1026,59 @@ export default function App() {
       )}
 
       {/* LOGIN MODAL */}
-      {/* {showLoginModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50">
-          <div className="bg-white p-8 rounded-xl shadow-2xl text-center max-w-sm mx-4">
-            <h2 className="text-3xl font-bold mb-4 text-gray-800">Welcome to ChatbotAI</h2>
-            <p className="mb-6 text-gray-600">Please log in with Google to continue.</p>
+      {showLoginModal && (
+        <div 
+          className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-[100]"
+          onClick={() => setShowLoginModal(false)}
+        >
+          <div 
+            className="bg-white p-8 rounded-xl shadow-2xl text-center max-w-sm mx-4 w-full"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="text-2xl font-bold mb-6 text-gray-800">Welcome</h2>
+            
+            {/* Google Login */}
             <button
-              onClick={handleLoginClick}
-              className="bg-gradient-to-r from-red-500 to-red-600 text-white px-8 py-3 rounded-lg hover:from-red-600 hover:to-red-700 transition duration-300 shadow-lg"
+              onClick={handleGoogleLogin}
+              className="w-full bg-red-600 text-white px-6 py-3 rounded-lg hover:bg-red-700 transition duration-300 shadow-md mb-6 flex items-center justify-center gap-2 font-medium"
             >
+              <FaGoogle />
               Login with Google
+            </button>
+
+            <div className="relative mb-6">
+              <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-gray-300"></div></div>
+              <div className="relative flex justify-center text-sm"><span className="px-2 bg-white text-gray-500">Or enter email</span></div>
+            </div>
+
+            {/* Manual Email */}
+            <div className="mb-6">
+              <input 
+                type="email" 
+                placeholder="Enter your email" 
+                className="w-full p-3 border border-gray-300 rounded-lg mb-3 text-black focus:ring-2 focus:ring-indigo-500 outline-none"
+                value={manualEmail}
+                onChange={(e) => setManualEmail(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleManualLogin()}
+              />
+              <button 
+                onClick={handleManualLogin}
+                className="w-full bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition-colors font-medium"
+              >
+                Register / Login
+              </button>
+            </div>
+
+            {/* Ask me later */}
+            <button
+              onClick={() => setShowLoginModal(false)}
+              className="text-gray-500 hover:text-gray-700 text-sm underline"
+            >
+              Ask me later
             </button>
           </div>
         </div>
-      )} */}
+      )}
 
       </div>
     </div>
