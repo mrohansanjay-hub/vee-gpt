@@ -1,6 +1,8 @@
 # app/auth/google.py
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Body
 from fastapi.responses import RedirectResponse, JSONResponse
+from pydantic import BaseModel
+from typing import Optional
 from urllib.parse import urlencode
 import os
 import requests
@@ -19,12 +21,15 @@ if GOOGLE_CLIENT_ID:
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
 if GOOGLE_CLIENT_SECRET:
     GOOGLE_CLIENT_SECRET = GOOGLE_CLIENT_SECRET.strip()
-GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:8000/auth/google/callback")
+GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://127.0.0.1:8000/auth/google/callback")
 if GOOGLE_REDIRECT_URI:
     GOOGLE_REDIRECT_URI = GOOGLE_REDIRECT_URI.strip()
 MONGO_URI = os.getenv("MONGO_URI", "")
 if MONGO_URI:
     MONGO_URI = MONGO_URI.strip()
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
+if FRONTEND_URL:
+    FRONTEND_URL = FRONTEND_URL.strip()
 
 if not all([GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI]):
     raise RuntimeError("Google OAuth credentials missing in .env")
@@ -33,7 +38,7 @@ if not MONGO_URI:
 
 # MongoDB
 client = MongoClient(MONGO_URI)
-db = client["chatbotai_db"]
+db = client["uchat"]
 users_collection = db["users"]
 
 # OAuth URLs
@@ -43,6 +48,37 @@ GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
 
 # Scopes
 SCOPE = "openid email profile"
+
+# --------------------------------------------------
+# Schema for Manual User Store
+# --------------------------------------------------
+class UserData(BaseModel):
+    email: str
+    name: Optional[str] = ""
+
+# --------------------------------------------------
+# Route: Store User (Manual Registration)
+# --------------------------------------------------
+@router.post("/store-user")
+def store_user(data: UserData):
+    try:
+        user = users_collection.find_one({"email": data.email})
+        now = datetime.utcnow()
+        if not user:
+            user_id = str(uuid.uuid4())
+            users_collection.insert_one({
+                "_id": user_id,
+                "email": data.email,
+                "name": data.name or "",
+                "created_at": now,
+                "last_login": now
+            })
+        else:
+            users_collection.update_one({"_id": user["_id"]}, {"$set": {"last_login": now}})
+        return JSONResponse({"status": "ok", "email": data.email})
+    except Exception as e:
+        print(f"Error storing user: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 # --------------------------------------------------
 # Route: Login
@@ -55,7 +91,7 @@ def login():
         "response_type": "code",
         "scope": SCOPE,
         "access_type": "offline",
-        "prompt": "consent"
+        "prompt": "select_account"
     }
     url = f"{GOOGLE_AUTH_URL}?{urlencode(params)}"
     return RedirectResponse(url)
@@ -123,7 +159,7 @@ def callback(request: Request, code: str = None, error: str = None):
     }
 
     # Redirect to frontend with email and name params
-    return RedirectResponse(url=f"http://localhost:5173/?email={user_email}&name={user_info.get('name', '')}")
+    return RedirectResponse(url=f"{FRONTEND_URL}/?email={user_email}&name={user_info.get('name', '')}")
 
 # --------------------------------------------------
 # Route: Get current logged-in user
@@ -141,4 +177,4 @@ def me(request: Request):
 @router.get("/logout")
 def logout(request: Request):
     request.session.clear()
-    return RedirectResponse(url="http://localhost:5173")
+    return RedirectResponse(url=f"{FRONTEND_URL}")

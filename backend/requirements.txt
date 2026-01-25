@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+python-dotenv
+pymongo
+openai
+requests
+boto3
+fpdf
+python-docx
+google-search-results
+pydantic
+python-multipart
+itsdangerous
