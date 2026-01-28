@@ -164,6 +164,7 @@ const ChatWindow = ({ messages, bottomRef, onFeedback, onEditSave }) => {
       )}
       {messages.map((msg, idx) => {
         const isUser = msg.role === "user";
+        console.log("📦 MESSAGE OBJECT:", msg);
         return (
           <div key={msg.id || idx}>
             <div
@@ -189,29 +190,40 @@ const ChatWindow = ({ messages, bottomRef, onFeedback, onEditSave }) => {
                       ? `bg-gray-200 text-black rounded-tr-none`
                       : "bg-gray-50 text-gray-800 rounded-tl-none border border-gray-200"
                   }`}
-                  onMouseEnter={() => setHoveredMessageId(msg.id)}
-                  onMouseLeave={() => setHoveredMessageId(null)}
+                  onMouseEnter={() => isUser && setHoveredMessageId(msg.id)}
+                  onMouseLeave={() => isUser && setHoveredMessageId(null)}
                 >
-                  {/* Generated Images - Handle both single URL and array */}
-                  {msg.image_url && (
+                  {/* Generated Images - Embedded in markdown + array storage */}
+                  {msg.images && msg.images.length > 0 && (
                     <>
-                      {console.log('🖼️ Rendering images:', msg.image_url)}
-                      <div className="mb-4 flex flex-wrap gap-3">
-                        {(Array.isArray(msg.image_url) ? msg.image_url : [msg.image_url])
-                          .filter(url => url) // Filter out empty/null URLs
-                          .map((imgUrl, idx) => (
-                          <img
-                            key={idx}
-                            src={imgUrl}
-                            alt={`Generated ${idx + 1}`}
-                            className="rounded-lg max-w-xs h-auto border border-gray-200 shadow-md"
-                            onError={(e) => {
-                              console.error('❌ Image load error for:', imgUrl);
-                              e.target.style.display = 'none';
-                            }}
-                            onLoad={() => console.log('✅ Image loaded:', imgUrl)}
-                          />
-                        ))}
+                      {console.log('🖼️ Rendering images from array:', msg.images)}
+                      <div className="mb-4 grid grid-cols-2 sm:grid-cols-3 gap-3">
+                        {msg.images
+                          .filter(item => item) // Filter out empty/null
+                          .map((item, idx) => {
+                            // Handle both old format (string URL) and new format (object with title and image)
+                            const imgUrl = typeof item === 'string' ? item : item?.image;
+                            const imgTitle = typeof item === 'string' ? null : item?.title;
+                            
+                            return (
+                              <div key={idx} className="flex flex-col items-center">
+                                <img
+                                  src={imgUrl}
+                                  alt={imgTitle || `Generated ${idx + 1}`}
+                                  className="rounded-lg w-full h-auto border border-gray-200 shadow-md hover:shadow-lg transition-shadow"
+                                  loading="lazy"
+                                  onError={(e) => {
+                                    console.error('❌ Image load error for:', imgUrl);
+                                    e.target.style.display = 'none';
+                                  }}
+                                  onLoad={() => console.log('✅ Image loaded:', imgUrl)}
+                                />
+                                {imgTitle && (
+                                  <p className="text-xs text-center text-gray-600 mt-2 line-clamp-2">{imgTitle}</p>
+                                )}
+                              </div>
+                            );
+                          })}
                       </div>
                     </>
                   )}

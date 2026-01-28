@@ -11,6 +11,10 @@ import {
   FaBug,
   FaGoogle,
   FaArrowRight,
+  FaChevronDown,
+  FaBolt,
+  FaStar,
+  FaRobot,
 } from "react-icons/fa";
 
 import ChatWindow from "./components/ChatWindow";
@@ -67,6 +71,7 @@ export default function App() {
   const [manualEmail, setManualEmail] = useState("");
   const [chatHistory, setChatHistory] = useState([]);
   const [model, setModel] = useState("gpt-4o-mini");
+  const [modelOpen, setModelOpen] = useState(false);
 
   // ------------------ REFS ------------------
   const bottomRef = useRef(null);
@@ -96,6 +101,7 @@ export default function App() {
   useEffect(() => {
     const handleClickOutside = (e) => {
       if (!e.target.closest(".pin-container")) setPinOpen(false);
+      if (!e.target.closest(".model-selector-container")) setModelOpen(false);
     };
     window.addEventListener("click", handleClickOutside);
     return () => window.removeEventListener("click", handleClickOutside);
@@ -115,12 +121,25 @@ export default function App() {
   // ------------------ HANDLE ACCOUNT ------------------
   const handleAccount = async (user) => {
     if (!user) {
+      // LOGOUT: Clear everything immediately
       setIsLoggedIn(false);
       setEmail("");
       setName("");
-      localStorage.removeItem('user');
+      setMessages([]);  // Clear current chat messages
+      setChatHistory([]);  // Clear chat history
+      setSessionId(generateSessionId());  // Reset session
+      localStorage.removeItem('user');  // Remove user from localStorage
+      localStorage.removeItem('chat_messages');  // Clear saved messages
+      localStorage.removeItem('chat_session_id');  // Clear session ID
+      setShowLoginModal(true);  // Show login popup immediately
+      setSidebarOpen(false);  // Close sidebar
+      
       // Logout from backend session
-      await fetch(`${API_URL}/auth/google/logout`);
+      try {
+        await fetch(`${API_URL}/auth/google/logout`);
+      } catch (error) {
+        console.error("Error logging out from backend:", error);
+      }
     } else {
       setIsLoggedIn(true);
       setEmail(user.email);
@@ -206,9 +225,11 @@ export default function App() {
     setMessages([]);
     setSessionId(generateSessionId());
     if (email) fetchChatHistory(email);
+    setSidebarOpen(false);
   };
 
   const handleLoadChat = async (sid) => {
+    setSidebarOpen(false);
     if (!email) return;
     try {
       const res = await fetch(`${API_URL}/chat/history/${sid}?email=${email}`);
@@ -287,6 +308,7 @@ export default function App() {
 
   // ------------------ AUTH ACTION (MENU BUTTON) ------------------
   const handleAuthAction = () => {
+    setSidebarOpen(false);
     if (isLoggedIn) {
       handleAccount(null); // Logout
     } else {
@@ -488,7 +510,7 @@ export default function App() {
       // Only add a new assistant placeholder if it's NOT a continuation
       // If it IS a continuation, we will append to the existing last message in the stream loop
       if (!isContinuation) {
-        setMessages([...updatedMessages, { id: Date.now(), role: "assistant", text: "", isComplete: false, image_url: null }]);
+        setMessages([...updatedMessages, { id: Date.now(), role: "assistant", text: "", isComplete: false, images: [], image_url: null }]);
       }
 
       const response = await fetch(`${API_URL}/chat`, {
@@ -525,7 +547,8 @@ export default function App() {
                   const msgs = [...prev];
                   const lastIdx = isContinuation ? msgs.findLastIndex(m => m.role === "assistant") : msgs.length - 1;
                   if (lastIdx !== -1) {
-                    msgs[lastIdx].image_url = imageUrls;
+                    msgs[lastIdx].images = imageUrls;
+                    msgs[lastIdx].image_url = imageUrls; // Keep for backward compatibility
                   }
                   return msgs;
                 });
@@ -549,13 +572,14 @@ export default function App() {
                 });
               } else if (data.type === "final") {
                 // Final response (typed event)
-                console.log('✅ Final response received with', imageUrls.length, 'images');
+                console.log('✅ Final response received with', (data.images || imageUrls).length, 'images');
                 setMessages((prev) => {
                   const msgs = [...prev];
                   const lastIdx = isContinuation ? msgs.findLastIndex(m => m.role === "assistant") : msgs.length - 1;
                   if (lastIdx !== -1) {
                     msgs[lastIdx].text = previousText + data.data;
-                    msgs[lastIdx].image_url = data.images || imageUrls;
+                    msgs[lastIdx].images = data.images || imageUrls || [];
+                    msgs[lastIdx].image_url = data.images || imageUrls || []; // Keep for backward compatibility
                     msgs[lastIdx].isComplete = true;
                     msgs[lastIdx].finishReason = data.finish_reason;
                     msgs[lastIdx].message_id = data.message_id;
@@ -588,7 +612,9 @@ export default function App() {
                   const lastIdx = isContinuation ? msgs.findLastIndex(m => m.role === "assistant") : msgs.length - 1;
                   if (lastIdx !== -1) {
                     msgs[lastIdx].text = previousText + data.final;
-                    msgs[lastIdx].image_url = data.image_url || imageUrls || null;
+                    msgs[lastIdx].images = data.image_url || imageUrls || [];
+                    msgs[lastIdx].image_url = data.image_url || imageUrls || [];
+
                     msgs[lastIdx].isComplete = true;
                     msgs[lastIdx].finishReason = data.finish_reason;
                     msgs[lastIdx].message_id = data.message_id;
@@ -767,7 +793,7 @@ export default function App() {
 </div>
 
       <div className="flex-1 flex justify-center overflow-hidden min-h-0">
-        <div className="w-full flex flex-col bg-white rounded-lg shadow-lg overflow-hidden min-h-0">
+        <div className="w-full flex flex-col bg-white md:rounded-lg md:shadow-lg overflow-hidden min-h-0 [&_img]:max-w-full [&_img]:h-auto">
           <ChatWindow messages={messages.filter(m => !m.isHidden)} bottomRef={bottomRef} onFeedback={handleMessageFeedback} onEditSave={handleEditSave} />
         </div>
       </div>
@@ -775,8 +801,8 @@ export default function App() {
 
       {/* CONTACT MODAL */}
       {showContact && (
-        <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50">
-          <div className="bg-white p-6 rounded-xl shadow-2xl w-96 max-w-sm mx-4">
+        <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-[60]">
+          <div className="bg-white p-6 rounded-xl shadow-2xl w-full max-w-sm mx-4">
             <h2 className="font-bold mb-3 text-xl text-gray-800">Contact Us</h2>
 
             <select
@@ -817,7 +843,7 @@ export default function App() {
 
       {/* ATTACHED FILES DISPLAY ABOVE FOOTER */}
       {attachedFiles.length > 0 && (
-        <div className="flex items-center gap-2 p-2 bg-gray-50 border-t" >
+        <div className="flex items-center gap-2 p-2 bg-gray-50 border-t overflow-x-auto" >
           {attachedFiles.map((f, idx) => (
             <div key={`${f.name}_${f.size}_${idx}`} className="px-2 py-1 bg-gray-100 rounded text-sm flex items-center gap-1">              {f.type.startsWith("image/") ? <FaFileImage size={14} /> :
                f.type.startsWith("video/") ? <FaFileVideo size={14} /> :
@@ -838,7 +864,7 @@ export default function App() {
       {!showBugReport && (
         <button
           onClick={() => setShowBugReport(true)}
-          className="absolute bottom-20 right-6 bg-red-500 text-white p-3 rounded-full shadow-lg hover:bg-red-600 transition-all z-40"
+          className="absolute bottom-32 right-4 bg-red-500 text-white p-3 rounded-full shadow-lg hover:bg-red-600 transition-all z-40"
           title="Report a Bug"
         >
           <FaBug size={20} />
@@ -849,10 +875,10 @@ export default function App() {
       {showBugReport && (
         <>
           <div 
-            className="fixed inset-0 bg-black/60 z-40 md:hidden"
+            className="fixed inset-0 bg-black/60 z-[60] md:hidden"
             onClick={() => setShowBugReport(false)}
           />
-          <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[90%] max-w-sm bg-white p-4 rounded-xl shadow-2xl border border-red-100 z-50 md:translate-x-0 md:translate-y-0 md:top-auto md:left-auto md:absolute md:bottom-20 md:right-6 md:w-80">
+          <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[90%] max-w-sm bg-white p-4 rounded-xl shadow-2xl border border-red-100 z-[60] md:translate-x-0 md:translate-y-0 md:top-auto md:left-auto md:absolute md:bottom-20 md:right-4 md:w-80">
           <div className="flex justify-between items-center mb-2">
             <h3 className="font-bold text-red-600 flex items-center gap-2">
               <FaBug /> Report Issue
@@ -895,7 +921,7 @@ export default function App() {
       )}
 
       {/* FOOTER */}
-      <footer className="sticky bottom-0 z-30 flex p-2 bg-white border-t border-gray-200 items-center gap-1 sm:gap-2">
+      <footer className="sticky bottom-0 z-50 flex p-2 bg-white border-t border-gray-200 items-center gap-1 sm:gap-2">
         <div className="pin-container relative flex-shrink-0">
           <button
             onClick={(e) => {
@@ -910,16 +936,41 @@ export default function App() {
         </div>
 
         {/* Model Selector */}
-        <select 
-          value={model} 
-          onChange={(e) => setModel(e.target.value)}
-          className="text-xs bg-gray-100 border-0 rounded-md px-2 py-1 text-gray-600 focus:ring-0 cursor-pointer hidden sm:block"
-          title="Select AI Model"
-        >
-          <option value="gpt-4o-mini">GPT-4o Mini</option>
-          <option value="gpt-4o">GPT-4o</option>
-          <option value="gpt-4-turbo">GPT-4.1 (Turbo)</option>
-        </select>
+        <div className="relative model-selector-container">
+          <button
+            onClick={() => setModelOpen(!modelOpen)}
+            className={`text-gray-500 hover:text-gray-700 p-2 rounded-full hover:bg-gray-100 transition-colors flex items-center justify-center ${modelOpen ? 'bg-white text-indigo-600 shadow-sm ring-1 ring-gray-200' : ''}`}
+            title="Select Model"
+            
+          >
+            <FaChevronDown size={18} className={`transition-transform ${modelOpen ? 'rotate-180' : ''}`} />
+          </button>
+          
+          {modelOpen && (
+            <div className="absolute bottom-full left-0 mb-2 w-64  rounded-xl shadow-2xl border border-gray-100 overflow-hidden z-50 flex flex-col" style={{backgroundColor: modelOpen ? '#eef2ff' : 'white'}}>
+              <div className="px-4 py-2 border-b border-gray-100 text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                Select Model
+              </div>
+              {[
+                { id: 'gpt-4o-mini', label: 'GPT-4o Mini', icon: <FaRobot className="text-blue-500" /> },
+                { id: 'gpt-4o', label: 'GPT-4o', icon: <FaStar className="text-yellow-500" /> },
+                { id: 'gpt-4-turbo', label: 'GPT-4.1 (Turbo)', icon: <FaBolt className="text-orange-500" /> }
+              ].map((opt) => (
+                <button
+                  key={opt.id}
+                  onClick={() => { setModel(opt.id); setModelOpen(false); }}
+                  className={`px-4 py-3 text-left text-sm hover:bg-white transition-colors flex items-center gap-3 whitespace-nowrap ${
+                    model === opt.id ? 'text-indigo-600 font-semibold' : 'text-gray-700'
+                  }`}
+                >
+                  <span className="text-lg">{opt.icon}</span>
+                  <span className={`font-medium ${model === opt.id ? 'font-bold' : ''}`}>{opt.label}</span>
+                  {model === opt.id && <div className="ml-auto w-2 h-2 rounded-full bg-indigo-600"></div>}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
 
  <textarea
   ref={textareaRef}
@@ -937,7 +988,7 @@ export default function App() {
   }}
   rows={1}
   placeholder="Type your prompt..."
-  className="flex-1 min-w-0 resize-none py-2 px-4 text-sm border rounded-2xl 
+  className="flex-1 min-w-0 resize-none py-3 px-4 text-base md:text-sm border rounded-2xl shadow-sm 
     bg-gray-50 dark:bg-gray-800 
     text-black dark:text-white 
     placeholder-gray-500 dark:placeholder-gray-400
@@ -957,14 +1008,6 @@ export default function App() {
         >
           <FaMicrophone size={18} />
         </button>
-
-        <button
-  onClick={() => alert("Coming Soon")} // or use a toast/modal here
-  className="your-camera-button-classes"
->
-  {/* Camera Icon */}
-</button>
-
 
         <button
           onClick={() => isProcessing ? handleStopGeneration() : sendMessage(null)}
@@ -1065,7 +1108,7 @@ export default function App() {
                 onClick={handleManualLogin}
                 className="w-full bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition-colors font-medium"
               >
-                Register / Login
+                Login
               </button>
             </div>
 

@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <!-- ... inside <head> ... -->
+    <title>Vee-GPT Admin Panel</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        [v-cloak] { display: none; }
+        .json-pre { white-space: pre-wrap; word-wrap: break-word; max-height: 150px; overflow-y: auto; font-size: 0.75rem; }
+        /* Custom scrollbar */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #f1f1f1; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+    </style>
+</head>
+<body class="bg-gray-50 text-slate-800 font-sans antialiased">
+    <div id="app" v-cloak class="h-screen flex flex-col">
+        <!-- Login Screen -->
+        <div v-if="!isLoggedIn" class="flex-1 flex items-center justify-center bg-gradient-to-br from-slate-900 to-slate-800 p-4">
+            <div class="w-full max-w-md bg-white rounded-xl shadow-2xl overflow-hidden">
+                <div class="p-8">
+                    <div class="text-center mb-8">
+                        <h1 class="text-3xl font-bold text-gray-900">Admin Portal</h1>
+                        <p class="text-gray-500 mt-2">Sign in to manage Vee-GPT</p>
+                    </div>
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Email</label>
+                            <input type="email" v-model="loginEmail" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition" placeholder="admin@gmail.com">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Password</label>
+                            <input type="password" v-model="loginPassword" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition" placeholder="••••••••">
+                        </div>
+                        <button @click="login" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-4 rounded-lg transition duration-200 shadow-md">
+                            Login
+                        </button>
+                        <p v-if="error" class="text-red-500 text-sm text-center mt-2">{{ error }}</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Layout -->
+        <div v-else class="flex h-screen overflow-hidden bg-gray-50">
+            <!-- Sidebar -->
+            <aside :class="sidebarOpen ? 'translate-x-0' : '-translate-x-full'" class="fixed inset-y-0 left-0 z-50 w-64 bg-slate-900 text-white transition-transform duration-300 ease-in-out lg:translate-x-0 lg:static lg:inset-0 shadow-xl flex flex-col">
+                <div class="flex items-center justify-center h-16 bg-slate-800 shadow-md">
+                    <h1 class="text-xl font-bold tracking-wider">Vee-GPT<span class="text-indigo-400">Admin</span></h1>
+                </div>
+                
+                <nav class="flex-1 px-4 py-6 space-y-2 overflow-y-auto">
+                    <a href="#" @click.prevent="currentView = 'dashboard'; currentCollection = null; sidebarOpen = false" 
+                       :class="currentView === 'dashboard' ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:bg-slate-800 hover:text-white'"
+                       class="flex items-center px-4 py-3 rounded-lg transition-colors duration-200">
+                        <i class="fas fa-chart-pie w-6"></i>
+                        <span class="font-medium">Dashboard</span>
+                    </a>
+                    
+                    <div class="pt-4 pb-2">
+                        <p class="px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Collections</p>
+                    </div>
+                    
+                    <a v-for="col in collections" :key="col" href="#" @click.prevent="loadCollection(col); sidebarOpen = false"
+                       :class="currentCollection === col ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:bg-slate-800 hover:text-white'"
+                       class="flex items-center px-4 py-2.5 rounded-lg transition-colors duration-200 capitalize">
+                        <i class="fas fa-database w-6 text-sm"></i>
+                        <span>{{ col }}</span>
+                    </a>
+                </nav>
+                
+                <div class="p-4 bg-slate-800">
+                    <button @click="logout" class="flex items-center justify-center w-full px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700 transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 focus:ring-offset-slate-800">
+                        <i class="fas fa-sign-out-alt mr-2"></i> Logout
+                    </button>
+                </div>
+            </aside>
+
+            <!-- Mobile Sidebar Overlay -->
+            <div v-if="sidebarOpen" @click="sidebarOpen = false" class="fixed inset-0 z-40 bg-black opacity-50 lg:hidden"></div>
+            
+            <!-- Main Content -->
+            <div class="flex-1 flex flex-col overflow-hidden">
+                <!-- Top Header -->
+                <header class="flex items-center justify-between px-6 py-4 bg-white shadow-sm z-10">
+                    <div class="flex items-center">
+                        <button @click="sidebarOpen = !sidebarOpen" class="text-gray-500 focus:outline-none lg:hidden mr-4">
+                            <i class="fas fa-bars text-xl"></i>
+                        </button>
+                        <h2 class="text-xl font-semibold text-gray-800 capitalize">{{ currentCollection ? currentCollection : 'Dashboard' }}</h2>
+                    </div>
+                    <div class="flex items-center space-x-3">
+                        <div class="hidden md:flex flex-col items-end mr-2">
+                            <span class="text-sm font-medium text-gray-700">{{ userEmail }}</span>
+                            <span class="text-xs text-green-500">Online</span>
+                        </div>
+                        <div class="h-8 w-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600 font-bold">
+                            {{ userEmail.charAt(0).toUpperCase() }}
+                        </div>
+                    </div>
+                </header>
+
+                <!-- Main Scrollable Area -->
+                <main class="flex-1 overflow-x-hidden overflow-y-auto bg-gray-50 p-4 md:p-6">
+                    
+                    <!-- Loading State -->
+                    <div v-if="loading" class="flex justify-center items-center h-64">
+                        <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600"></div>
+                    </div>
+
+                    <!-- Dashboard View -->
+                    <div v-else-if="currentView === 'dashboard'" class="space-y-6">
+                        <!-- Stats Grid -->
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <!-- Users Card -->
+                            <div class="bg-white rounded-xl shadow-sm p-6 border-l-4 border-indigo-500 hover:shadow-md transition-shadow">
+                                <div class="flex justify-between items-start">
+                                    <div>
+                                        <p class="text-sm font-medium text-gray-500 uppercase">Users</p>
+                                        <h3 class="text-3xl font-bold text-gray-800 mt-1">{{ stats.total_users }}</h3>
+                                    </div>
+                                    <div class="p-3 bg-indigo-50 rounded-lg text-indigo-600">
+                                        <i class="fas fa-users text-xl"></i>
+                                    </div>
+                                </div>
+                                <div class="mt-4 flex items-center justify-between">
+                                    <span class="text-sm text-green-600 font-medium flex items-center">
+                                        <i class="fas fa-arrow-up mr-1"></i> {{ stats.new_users }} new (24h)
+                                    </span>
+                                    <button @click="loadCollection('users', true)" class="text-sm text-indigo-600 hover:text-indigo-800 font-medium">View Details &rarr;</button>
+                                </div>
+                            </div>
+
+                            <!-- Chats Card -->
+                            <div class="bg-white rounded-xl shadow-sm p-6 border-l-4 border-emerald-500 hover:shadow-md transition-shadow">
+                                <div class="flex justify-between items-start">
+                                    <div>
+                                        <p class="text-sm font-medium text-gray-500 uppercase">Total Chats</p>
+                                        <h3 class="text-3xl font-bold text-gray-800 mt-1">{{ stats.total_chats }}</h3>
+                                    </div>
+                                    <div class="p-3 bg-emerald-50 rounded-lg text-emerald-600">
+                                        <i class="fas fa-comments text-xl"></i>
+                                    </div>
+                                </div>
+                                <div class="mt-4 flex items-center justify-between">
+                                    <span class="text-sm text-green-600 font-medium flex items-center">
+                                        <i class="fas fa-arrow-up mr-1"></i> {{ stats.new_chats }} new (24h)
+                                    </span>
+                                    <button @click="loadCollection('chats', true)" class="text-sm text-emerald-600 hover:text-emerald-800 font-medium">View Details &rarr;</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Quick Links -->
+                        <h3 class="text-lg font-semibold text-gray-700 mt-8 mb-4">Collections</h3>
+                        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                            <div v-for="col in collections" :key="col" 
+                                 @click="loadCollection(col)" 
+                                 class="bg-white p-6 rounded-xl shadow-sm hover:shadow-md transition-all cursor-pointer border border-gray-100 group">
+                                <div class="flex items-center space-x-4">
+                                    <div class="h-10 w-10 rounded-full bg-indigo-50 flex items-center justify-center text-indigo-600 group-hover:bg-indigo-600 group-hover:text-white transition-colors">
+                                        <i class="fas fa-database"></i>
+                                    </div>
+                                    <div>
+                                        <h5 class="font-semibold text-gray-800 capitalize">{{ col }}</h5>
+                                        <p class="text-xs text-gray-500">View Records</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Collection View -->
+                    <div v-else-if="currentCollection" class="bg-white rounded-xl shadow-sm border border-gray-200 flex flex-col h-full max-h-[calc(100vh-8rem)]">
+                        <!-- Toolbar -->
+                        <div class="p-4 border-b border-gray-200 flex flex-col md:flex-row gap-4 justify-between items-center bg-gray-50 rounded-t-xl">
+                            <div class="flex flex-col md:flex-row gap-3 w-full md:w-auto flex-1">
+                                <div class="relative flex-1 max-w-xs">
+                                    <span class="absolute inset-y-0 left-0 flex items-center pl-3 text-gray-400">
+                                        <i class="fas fa-envelope"></i>
+                                    </span>
+                                    <input 
+                                        type="text" 
+                                        v-model="searchEmail" 
+                                        class="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none text-sm" 
+                                        placeholder="Search email..."
+                                    >
+                                </div>
+                                <div class="relative flex-1 max-w-xs">
+                                    <span class="absolute inset-y-0 left-0 flex items-center pl-3 text-gray-400">
+                                        <i class="fas fa-fingerprint"></i>
+                                    </span>
+                                    <input 
+                                        type="text" 
+                                        v-model="searchSessionId" 
+                                        class="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none text-sm" 
+                                        placeholder="Search Session ID..."
+                                    >
+                                </div>
+                            </div>
+                            <div class="w-full md:w-auto">
+                                <button 
+                                    @click="toggleNewOnly" 
+                                    :class="showNewOnly ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'"
+                                    class="w-full md:w-auto px-4 py-2 border rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
+                                >
+                                    <i class="fas fa-clock"></i>
+                                    {{ showNewOnly ? 'Showing New (24h)' : 'Show All Time' }}
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <!-- Table Content -->
+                        <div class="flex-1 overflow-auto">
+                            <div v-if="filteredDocuments.length === 0" class="flex flex-col items-center justify-center h-64 text-gray-500">
+                                <i class="fas fa-search text-4xl mb-3 text-gray-300"></i>
+                                <p>{{ searchEmail.trim() || searchSessionId.trim() ? 'No matching records found.' : 'No data in this collection.' }}</p>
+                            </div>
+                            
+                            <table v-else class="min-w-full divide-y divide-gray-200">
+                                <thead class="bg-gray-50 sticky top-0 z-10">
+                                    <tr>
+                                        <th v-for="header in getHeaders(paginatedDocuments)" :key="header" 
+                                            class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap bg-gray-50">
+                                            {{ header }}
+                                        </th>
+                                    </tr>
+                                </thead>
+                                <tbody class="bg-white divide-y divide-gray-200">
+                                    <tr v-for="doc in paginatedDocuments" :key="doc._id" class="hover:bg-gray-50 transition-colors">
+                                        <td v-for="header in getHeaders(paginatedDocuments)" :key="header" class="px-6 py-4 text-sm text-gray-700 align-top">
+                                            <div v-if="isObject(doc[header])" class="bg-gray-50 p-2 rounded border border-gray-200">
+                                                <pre class="json-pre text-xs text-gray-600">{{ formatJson(doc[header]) }}</pre>
+                                            </div>
+                                            <div v-else class="max-w-xs truncate" :title="doc[header]">
+                                                {{ doc[header] }}
+                                            </div>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        
+                        <!-- Pagination -->
+                        <div class="px-6 py-4 border-t border-gray-200 bg-gray-50 rounded-b-xl flex flex-col sm:flex-row items-center justify-between gap-4">
+                            <div class="text-sm text-gray-500">
+                                Showing <span class="font-medium">{{ (currentPage - 1) * itemsPerPage + 1 }}</span> to <span class="font-medium">{{ Math.min(currentPage * itemsPerPage, filteredDocuments.length) }}</span> of <span class="font-medium">{{ filteredDocuments.length }}</span> results
+                            </div>
+                            
+                            <nav v-if="totalPages > 1" class="relative z-0 inline-flex rounded-md shadow-sm -space-x-px" aria-label="Pagination">
+                                <button @click="currentPage = 1" :disabled="currentPage === 1" 
+                                    class="relative inline-flex items-center px-2 py-2 rounded-l-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed">
+                                    <span class="sr-only">First</span>
+                                    <i class="fas fa-angle-double-left"></i>
+                                </button>
+                                <button @click="currentPage--" :disabled="currentPage === 1" 
+                                    class="relative inline-flex items-center px-2 py-2 border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed">
+                                    <span class="sr-only">Previous</span>
+                                    <i class="fas fa-angle-left"></i>
+                                </button>
+                                
+                                <!-- Page Numbers (Simplified) -->
+                                <span class="relative inline-flex items-center px-4 py-2 border border-gray-300 bg-white text-sm font-medium text-gray-700">
+                                    Page {{ currentPage }} of {{ totalPages }}
+                                </span>
+                                
+                                <button @click="currentPage++" :disabled="currentPage === totalPages" 
+                                    class="relative inline-flex items-center px-2 py-2 border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed">
+                                    <span class="sr-only">Next</span>
+                                    <i class="fas fa-angle-right"></i>
+                                </button>
+                                <button @click="currentPage = totalPages" :disabled="currentPage === totalPages" 
+                                    class="relative inline-flex items-center px-2 py-2 rounded-r-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed">
+                                    <span class="sr-only">Last</span>
+                                    <i class="fas fa-angle-double-right"></i>
+                                </button>
+                            </nav>
+                        </div>
+                    </div>
+                </main>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/vue@3.2.47/dist/vue.global.prod.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <script>
+        const { createApp } = Vue;
+
+        createApp({
+            data() {
+                return {
+                    isLoggedIn: false,
+                    loginEmail: '',
+                    loginPassword: '',
+                    userEmail: '',
+                    error: '',
+                    collections: [],
+                    currentCollection: null,
+                    currentView: 'dashboard',
+                    documents: [],
+                    loading: false,
+                    searchEmail: '',
+                    searchSessionId: '',
+                    currentPage: 1,
+                    itemsPerPage: 50,
+                    showNewOnly: false,
+                    sidebarOpen: false,
+                    stats: {
+                        new_users: 0,
+                        total_users: 0,
+                        new_chats: 0,
+                        total_chats: 0
+                    }
+                }
+            },
+            computed: {
+                filteredDocuments() {
+                    let filtered = this.documents;
+                    
+                    if (this.searchEmail.trim()) {
+                        filtered = filtered.filter(doc => {
+                            const docEmail = doc.email ? doc.email.toLowerCase() : '';
+                            return docEmail.includes(this.searchEmail.toLowerCase());
+                        });
+                    }
+                    
+                    if (this.searchSessionId.trim()) {
+                        filtered = filtered.filter(doc => {
+                            const docSessionId = doc.session_id ? doc.session_id.toLowerCase() : '';
+                            return docSessionId.includes(this.searchSessionId.toLowerCase());
+                        });
+                    }
+                    
+                    return filtered;
+                },
+                paginatedDocuments() {
+                    const start = (this.currentPage - 1) * this.itemsPerPage;
+                    const end = start + this.itemsPerPage;
+                    return this.filteredDocuments.slice(start, end);
+                },
+                totalPages() {
+                    return Math.ceil(this.filteredDocuments.length / this.itemsPerPage);
+                }
+            },
+            mounted() {
+                this.checkAuth();
+            },
+            methods: {
+                async checkAuth() {
+                    try {
+                        const res = await axios.get('/admin/api/me');
+                        if (res.data.user) {
+                            this.isLoggedIn = true;
+                            this.userEmail = res.data.user;
+                            this.fetchCollections();
+                        }
+                    } catch (e) {
+                        this.isLoggedIn = false;
+                    }
+                },
+                async login() {
+                    try {
+                        await axios.post('/admin/login', {
+                            email: this.loginEmail,
+                            password: this.loginPassword
+                        });
+                        this.isLoggedIn = true;
+                        this.userEmail = this.loginEmail;
+                        this.error = '';
+                        this.fetchCollections();
+                    } catch (e) {
+                        this.error = e.response?.data?.detail || 'Login failed';
+                    }
+                },
+                async logout() {
+                    await axios.post('/admin/logout');
+                    this.isLoggedIn = false;
+                    this.loginEmail = '';
+                    this.loginPassword = '';
+                    this.currentCollection = null;
+                    this.currentView = 'dashboard';
+                },
+                async fetchCollections() {
+                    const res = await axios.get('/admin/api/collections');
+                    this.collections = res.data;
+                    this.fetchStats();
+                },
+                async fetchStats() {
+                    try {
+                        const res = await axios.get('/admin/api/stats');
+                        this.stats = res.data;
+                    } catch (e) {
+                        console.error('Stats fetch error:', e);
+                    }
+                },
+                async loadCollection(name, newOnly = false) {
+                    this.loading = true;
+                    this.currentCollection = name;
+                    this.currentView = 'collection';
+                    this.documents = [];
+                    this.searchEmail = '';
+                    this.searchSessionId = '';
+                    this.currentPage = 1;
+                    this.showNewOnly = newOnly;
+                    try {
+                        const res = await axios.get(`/admin/api/collections/${name}`, {
+                            params: { new_only: newOnly }
+                        });
+                        this.documents = res.data;
+                    } catch (e) {
+                        console.error(e);
+                    } finally {
+                        this.loading = false;
+                    }
+                },
+                toggleNewOnly() {
+                    this.showNewOnly = !this.showNewOnly;
+                    this.currentPage = 1;
+                    this.loadCollectionWithFilter();
+                },
+                async loadCollectionWithFilter() {
+                    this.loading = true;
+                    try {
+                        const res = await axios.get(`/admin/api/collections/${this.currentCollection}`, {
+                            params: { new_only: this.showNewOnly }
+                        });
+                        this.documents = res.data;
+                    } catch (e) {
+                        console.error(e);
+                    } finally {
+                        this.loading = false;
+                    }
+                },
+                getHeaders(docs) {
+                    if (!docs || docs.length === 0) return [];
+                    const keys = new Set();
+                    docs.slice(0, 10).forEach(d => Object.keys(d).forEach(k => keys.add(k)));
+                    const keyArray = Array.from(keys);
+                    if (keyArray.includes('_id')) {
+                        keyArray.splice(keyArray.indexOf('_id'), 1);
+                        keyArray.unshift('_id');
+                    }
+                    return keyArray;
+                },
+                isObject(val) {
+                    return typeof val === 'object' && val !== null;
+                },
+                formatJson(val) {
+                    return JSON.stringify(val, null, 2);
+                }
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
