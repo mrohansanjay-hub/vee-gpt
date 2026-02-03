@@ -5,27 +5,71 @@
 backend/.env
 frontend/.env.local
 *.secret
+# General
+.DS_Store
+Thumbs.db
+*.log
+tmp/
+temp/
 
 # ----------------------
 # Python cache
 # ----------------------
+# IDEs and Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Python (Backend)
 __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
 *.sqlite3
+*$py.class
+*.so
+.Python
 
 # ----------------------
 # Python virtual env
 # ----------------------
+# Virtual Environments
 venv/
 env/
 ENV/
+.venv/
+backend/venv/
+backend/env/
+backend/.venv/
 
 # ----------------------
 # Node / frontend
 # ----------------------
+# Python Build/Distribution
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Pytest
+.pytest_cache/
+
+# Node.js (Frontend)
 node_modules/
+frontend/node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -34,6 +78,7 @@ yarn.lock
 dist/
 build/
 *.log
+.pnpm-debug.log*
 
 # ----------------------
 # Mac / Windows / Linux
@@ -42,6 +87,12 @@ build/
 Thumbs.db
 *.swp
 *.swo
+# Frontend Build Outputs
+frontend/build/
+frontend/dist/
+frontend/.next/
+frontend/out/
+coverage/
 
 # ----------------------
 # Zip / Large files
@@ -64,3 +115,9 @@ Thumbs.db
 # ----------------------
 *.orig
 *.rej
+# Environment Variables (Secrets)
+.env
+backend/.env
+frontend/.env
+backend/.env
+frontend/.env
