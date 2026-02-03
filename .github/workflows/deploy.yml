@@ -1,0 +1,49 @@
+name: Deploy Frontend and Backend to EKS
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push backend image
+        run: |
+          docker build -t pipeline-backend ./backend
+          docker tag pipeline-backend:latest 460678531020.dkr.ecr.us-east-1.amazonaws.com/pipeline-backend:latest
+          docker push 460678531020.dkr.ecr.us-east-1.amazonaws.com/pipeline-backend:latest
+
+      - name: Build and push frontend image
+        run: |
+          docker build -t pipeline-frontend ./frontend
+          docker tag pipeline-frontend:latest 460678531020.dkr.ecr.us-east-1.amazonaws.com/pipeline-frontend:latest
+          docker push 460678531020.dkr.ecr.us-east-1.amazonaws.com/pipeline-frontend:latest
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --region us-east-1 --name company-eks-cluster
+
+      - name: Deploy to EKS
+        run: |
+          kubectl apply -f k8s/
+          kubectl rollout status deployment backend-deployment
+          kubectl rollout status deployment frontend-deployment
