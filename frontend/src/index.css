@@ -35,3 +35,7 @@
   position: relative;
   margin: 1em 0;
 }
+
+.hover\:text-green-300 {
+    color: white;
+}

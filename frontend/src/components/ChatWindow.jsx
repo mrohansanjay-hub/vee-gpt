@@ -19,8 +19,12 @@ import {
   FaEdit,
   FaEye,
   FaTimes,
+  FaVolumeUp,
 } from "react-icons/fa";
-import { downloadFile } from "./fileDownload";
+import { downloadFile, forceDownload } from "./fileDownload";
+import { detectLanguage, getLanguageName, getSpeechLanguageCode } from "../utils/languageDetector";
+import { findBestVoice, logAvailableVoices } from "../utils/voiceSelector";
+import style from "react-syntax-highlighter/dist/esm/styles/hljs/a11y-dark";
 
 const CopyButton = ({ text }) => {
   const [copied, setCopied] = useState(false);
@@ -32,12 +36,13 @@ const CopyButton = ({ text }) => {
   };
 
   return (
+   
     <button
       onClick={handleCopy}
-      className="text-gray-400 hover:text-white transition-colors flex items-center gap-1 text-xs"
+      className="text-wheat hover:text-green-300 transition-colors flex items-center gap-1 text-base font-medium"
       title="Copy Code"
     >
-      {copied ? <FaCheck size={12} className="text-green-400" /> : <FaCopy size={12} />}
+      {copied ? <FaCheck size={14} className="text-green-400" /> : <FaCopy size={14} />}
       {copied ? "Copied" : "Copy"}
     </button>
   );
@@ -57,6 +62,8 @@ const ChatWindow = ({ messages, bottomRef, onFeedback, onEditSave }) => {
   const [editText, setEditText] = useState("");
   const [previewFile, setPreviewFile] = useState(null);
   const [hoveredMessageId, setHoveredMessageId] = useState(null);
+  const [speakingId, setSpeakingId] = useState(null); // Track which message is being spoken by ID
+  const [detectedLanguages, setDetectedLanguages] = useState({}); // Cache detected languages
 
   const handleCopy = (id, text) => {
     navigator.clipboard.writeText(text);
@@ -88,6 +95,11 @@ const ChatWindow = ({ messages, bottomRef, onFeedback, onEditSave }) => {
     setEditingId(null);
     setEditText("");
   };
+
+  // Log available voices on component mount (for debugging)
+  useEffect(() => {
+    logAvailableVoices();
+  }, []);
 
   // Close download menu and reset hover when clicking outside
   useEffect(() => {
@@ -151,28 +163,110 @@ const ChatWindow = ({ messages, bottomRef, onFeedback, onEditSave }) => {
     console.log('='.repeat(50));
   };
 
+  const handleSpeak = (text, messageId) => {
+    // If already speaking this message, stop the speech
+    if (speakingId === messageId) {
+      window.speechSynthesis.cancel();
+      setSpeakingId(null);
+      return;
+    }
+
+    // Improved text cleaning - be conservative to preserve content
+    let plainText = text
+      .replace(/```[\s\S]*?```/g, ' ') // Replace code blocks with space
+      .replace(/`[^`]*`/g, ' ') // Replace inline code with space
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1') // Replace links [text](url) with just text
+      .replace(/!\[([^\]]*)\]\([^)]*\)/g, '') // Remove image syntax ![alt](url)
+      .replace(/\*\*([^\*]+)\*\*/g, '$1') // Replace **bold** with bold text
+      .replace(/\*([^\*]+)\*/g, '$1') // Replace *italic* with italic text
+      .replace(/__([^_]+)__/g, '$1') // Replace __bold__ with text
+      .replace(/_([^_]+)_/g, '$1') // Replace _italic_ with text
+      .replace(/~~([^~]+)~~/g, '$1') // Replace ~~strikethrough~~ with text
+      .replace(/#{1,6}\s+/g, '') // Remove heading markers (# ## ### etc)
+      .replace(/^[-*+]\s+/gm, '') // Remove bullet points
+      .replace(/^\d+\.\s+/gm, '') // Remove numbered lists
+      .replace(/\n+/g, ' ') // Replace multiple newlines with space
+      .replace(/\s+/g, ' ') // Replace multiple spaces with single space
+      .trim();
+
+    console.log("📢 Speaking text:", plainText.substring(0, 100));
+
+    if (!plainText) {
+      alert('No text content to speak');
+      return;
+    }
+
+    // Auto-detect language of the text
+    let detectedLang = detectedLanguages[messageId];
+    if (!detectedLang) {
+      detectedLang = detectLanguage(text);
+      console.log("🎤 Detected language:", detectedLang);
+      setDetectedLanguages(prev => ({
+        ...prev,
+        [messageId]: detectedLang
+      }));
+    }
+
+    // Create speech utterance
+    const speech = new SpeechSynthesisUtterance(plainText);
+    speech.lang = getSpeechLanguageCode(detectedLang);
+    speech.rate = 1;
+    speech.pitch = 1;
+    speech.volume = 1;
+
+    console.log("🔊 Starting speech synthesis in language:", speech.lang);
+
+    // Find best voice for this language
+    findBestVoice(detectedLang).then(voice => {
+      if (voice) {
+        speech.voice = voice;
+        console.log(`✅ Using voice: ${voice.name} (${voice.lang})`);
+      } else {
+        console.warn(`⚠️ No voice found for ${detectedLang}, using system default`);
+      }
+      
+      // Start speaking
+      window.speechSynthesis.speak(speech);
+    }).catch(err => {
+      console.error("❌ Voice selection error:", err);
+      // Still try to speak even if voice selection fails
+      window.speechSynthesis.speak(speech);
+    });
+
+    // Handle when speech ends
+    speech.onend = () => {
+      console.log("✅ Speech ended");
+      setSpeakingId(null);
+    };
+
+    speech.onerror = (e) => {
+      console.error("❌ Speech error:", e.error);
+      setSpeakingId(null);
+    };
+
+    setSpeakingId(messageId); // Set to message ID to track which message is speaking
+  };
+
   return (
-    <div className="flex-1 overflow-y-auto p-2 sm:p-4 space-y-4 sm:space-y-6 bg-white flex flex-col scrollbar-hide" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
-      {/* Hide scrollbar for Chrome, Safari, Edge */}
-      <style>{`
-        .scrollbar-hide::-webkit-scrollbar { display: none; }
-      `}</style>
+    <div className="flex-1 overflow-y-auto p-2 sm:p-4 space-y-4 sm:space-y-6 bg-white flex flex-col">
       {messages.length === 0 && (
-        <div className="text-center text-gray-400 mt-64 text-3xl font-semibold">
+        <div className="text-center text-gray-400 mt-64 text-4xl font-semibold">
           What's on the agenda today?
         </div>
       )}
       {messages.map((msg, idx) => {
         const isUser = msg.role === "user";
         console.log("📦 MESSAGE OBJECT:", msg);
+        // Use unique key: combination of index and timestamp to ensure uniqueness
+        const uniqueKey = msg.id ? `${idx}-${msg.id}` : `msg-${idx}-${Date.now()}-${Math.random()}`;
         return (
-          <div key={msg.id || idx}>
+          <div key={uniqueKey}>
             <div
               className={`flex gap-2 sm:gap-4 ${isUser ? "flex-row-reverse" : "flex-row"}`}
             >
               {/* Avatar */}
               <div
-                className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center shadow-sm ${
+                className={`shrink-0 w-8 h-8 rounded-full flex items-center justify-center shadow-sm ${
                   isUser ? "bg-indigo-600" : "bg-green-600"
                 }`}
                 style={{ color: 'white' }}
@@ -206,7 +300,7 @@ const ChatWindow = ({ messages, bottomRef, onFeedback, onEditSave }) => {
                             const imgTitle = typeof item === 'string' ? null : item?.title;
                             
                             return (
-                              <div key={idx} className="flex flex-col items-center">
+                              <div key={idx} className="flex flex-col items-center relative group">
                                 <img
                                   src={imgUrl}
                                   alt={imgTitle || `Generated ${idx + 1}`}
@@ -218,8 +312,25 @@ const ChatWindow = ({ messages, bottomRef, onFeedback, onEditSave }) => {
                                   }}
                                   onLoad={() => console.log('✅ Image loaded:', imgUrl)}
                                 />
+                                {/* Download button for beautified images */}
+                                {msg.beautified && (
+                                  <button
+                                    onClick={() => {
+                                      const a = document.createElement('a');
+                                      a.href = imgUrl;
+                                      a.download = `beautified-image-${idx + 1}.jpg`;
+                                      document.body.appendChild(a);
+                                      a.click();
+                                      document.body.removeChild(a);
+                                    }}
+                                    className="absolute top-2 right-2 bg-indigo-600 hover:bg-indigo-700 text-white p-2 rounded-full shadow-lg opacity-0 group-hover:opacity-100 transition-opacity"
+                                    title="Download beautified image"
+                                  >
+                                    <FaDownload size={14} />
+                                  </button>
+                                )}
                                 {imgTitle && (
-                                  <p className="text-xs text-center text-gray-600 mt-2 line-clamp-2">{imgTitle}</p>
+                                  <p className="text-base text-center text-gray-600 mt-2 line-clamp-2">{imgTitle}</p>
                                 )}
                               </div>
                             );
@@ -229,26 +340,26 @@ const ChatWindow = ({ messages, bottomRef, onFeedback, onEditSave }) => {
                   )}
 
                   {/* Text Content */}
-                  <div className={`text-xs sm:text-sm leading-relaxed break-words max-w-full overflow-hidden ${isUser ? "text-black" : "text-gray-800"}`}>
+                  <div className={`text-base sm:text-lg leading-relaxed wrap-break-word max-w-full overflow-hidden ${isUser ? "text-black" : "text-gray-800"}`}>
                     {isUser ? (
                       editingId === msg.id ? (
                         <div className="space-y-2">
                           <textarea
                             value={editText}
                             onChange={(e) => setEditText(e.target.value)}
-                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white text-black text-sm"
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white text-black text-lg"
                             rows="4"
                           />
                           <div className="flex gap-2 justify-end">
                             <button
                               onClick={() => handleEditSave(msg.id)}
-                              className="px-3 py-1 bg-indigo-600 text-white text-xs rounded hover:bg-indigo-700 transition"
+                              className="px-3 py-1 bg-indigo-600 text-white text-sm rounded hover:bg-indigo-700 transition"
                             >
                               Save
                             </button>
                             <button
                               onClick={handleEditCancel}
-                              className="px-3 py-1 bg-gray-400 text-white text-xs rounded hover:bg-gray-500 transition"
+                              className="px-3 py-1 bg-gray-400 text-white text-sm rounded hover:bg-gray-500 transition"
                             >
                               Cancel
                             </button>
@@ -266,8 +377,8 @@ const ChatWindow = ({ messages, bottomRef, onFeedback, onEditSave }) => {
                             return !inline && match ? (
                               <div className="rounded-lg overflow-hidden my-4 border border-gray-700 shadow-md max-w-full">
                                 {/* VSCode-like Header */}
-                                <div className="bg-[#1e1e1e] px-4 py-2 flex justify-between items-center border-b border-gray-700">
-                                  <span className="text-xs text-gray-400 font-mono font-bold uppercase">
+                                <div className="bg-[#1e1e1e] px-4 py-3 flex justify-between items-center border-b border-gray-700">
+                                  <span className="text-base text-gray-300 font-mono font-bold uppercase">
                                     {match[1]}
                                   </span>
                                   <CopyButton text={String(children).replace(/\n$/, "")} />
@@ -281,8 +392,8 @@ const ChatWindow = ({ messages, bottomRef, onFeedback, onEditSave }) => {
     margin: 0,
     padding: "1rem",
     borderRadius: 0,
-    fontSize: "0.85em",
-    lineHeight: "1.5",
+    fontSize: "1em",
+    lineHeight: "1.6",
     maxWidth: "100%",
     overflowX: "auto",
     wordBreak: "break-word",
@@ -297,7 +408,7 @@ const ChatWindow = ({ messages, bottomRef, onFeedback, onEditSave }) => {
                               <code
                                 className={`${
                                   className || ""
-                                } bg-gray-200 text-red-600 px-1.5 py-0.5 rounded text-xs font-mono`}
+                                } bg-gray-200 text-red-600 px-1.5 py-0.5 rounded text-sm font-mono`}
                                 {...props}
                               >
                                 {children}
@@ -308,32 +419,46 @@ const ChatWindow = ({ messages, bottomRef, onFeedback, onEditSave }) => {
                           ul: ({ node, ...props }) => <ul className="list-disc ml-5 mb-3 space-y-1" {...props} />,
                           ol: ({ node, ...props }) => <ol className="list-decimal ml-5 mb-3 space-y-1" {...props} />,
                           li: ({ node, ...props }) => <li className="pl-1" {...props} />,
-                          a: ({ node, ...props }) => (
-                            <a
-                              className="text-blue-600 hover:underline font-medium"
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              onClick={(e) => {
-                                const href = props.href || '';
-                                const isFake = href.includes('example.com') || href.includes('localhost') || href === '#' || href.includes('file.io') || href === '#download' || href.includes('sandbox:');
-                                if (isFake) {
-                                  e.preventDefault();
-                                  let fmt = 'pdf';
-                                  const textContent = String(props.children || '').toLowerCase();
-                                  if (href.includes('.pdf') || textContent.includes('pdf')) fmt = 'pdf';
-                                  else if (href.includes('.doc') || textContent.includes('word') || textContent.includes('doc')) fmt = 'doc';
-                                  else if (textContent.includes('resume') || textContent.includes('cv')) fmt = 'doc';
-                                  else if (href.includes('.ppt') || textContent.includes('ppt')) fmt = 'ppt';
-                                  else if (href.includes('.txt') || textContent.includes('text')) fmt = 'txt';
-                                  handleDownload(msg.text, fmt);
+                         
+                         a: ({ node, ...props }) => {
+                            const href = props.href || "";
+                            const text = String(
+                              props.children || "",
+                            ).toLowerCase();
+
+                            // Regular external links - open in new tab
+                            const handleClick = (e) => {
+                              if (!href || href === '#' || href.startsWith('#')) {
+                                e.preventDefault();
+                                e.stopPropagation();
+                              } else {
+                                // Allow normal link behavior for external URLs
+                                // But open in new tab
+                                if (e.ctrlKey || e.metaKey || e.button === 1) {
+                                  return; // Let browser handle ctrl/cmd click
                                 }
-                              }}
-                              {...props}
-                            />
-                          ),
-                          h1: ({ node, ...props }) => <h1 className="text-2xl font-bold mb-4 mt-6 border-b pb-2" {...props} />,
-                          h2: ({ node, ...props }) => <h2 className="text-xl font-bold mb-3 mt-5" {...props} />,
-                          h3: ({ node, ...props }) => <h3 className="text-lg font-bold mb-2 mt-4" {...props} />,
+                                e.preventDefault();
+                                window.open(href, "_blank");
+                              }
+                            };
+
+                            return (
+                              <a
+                                href={href}
+                                onClick={handleClick}
+                                className="text-blue-600 hover:underline font-medium cursor-pointer"
+                                target={href && !href.startsWith('#') ? "_blank" : undefined}
+                                rel="noopener noreferrer"
+                              >
+                                {props.children}
+                              </a>
+                            );
+                          },
+
+
+                          h1: ({ node, ...props }) => <h1 className="text-3xl font-bold mb-4 mt-6 border-b pb-2" {...props} />,
+                          h2: ({ node, ...props }) => <h2 className="text-2xl font-bold mb-3 mt-5" {...props} />,
+                          h3: ({ node, ...props }) => <h3 className="text-xl font-bold mb-2 mt-4" {...props} />,
                           blockquote: ({ node, ...props }) => (
                             <blockquote className="border-l-4 border-indigo-300 pl-4 italic text-gray-600 my-4 bg-gray-50 py-2 rounded-r" {...props} />
                           ),
@@ -345,17 +470,59 @@ const ChatWindow = ({ messages, bottomRef, onFeedback, onEditSave }) => {
                   </div>
 
                   {/* Attached Files (User) */}
-                  {msg.files && msg.files.length > 0 && (
-                    <div className="mt-3 flex flex-wrap gap-2 pt-3 border-t border-white/20">
-                      {msg.files.map((f, i) => (
+                  {(msg.files && msg.files.length > 0 || msg.attachedFiles && msg.attachedFiles.length > 0 || msg.fileDataUrls) && (
+                    <div className="mt-3 flex flex-col gap-3 pt-3 border-t border-white/20">
+                      {/* Image Previews - Handle both File objects and stored data URLs */}
+                      {msg.attachedFiles && msg.attachedFiles.filter(f => f && f.type && f.type.startsWith("image/")).map((f, i) => {
+                        const src = f instanceof File ? URL.createObjectURL(f) : (msg.fileDataUrls?.images?.[i] || URL.createObjectURL(f));
+                        return (
+                          <div key={`img-${i}`} className="relative group">
+                            <img
+                              src={src}
+                              alt={f.name}
+                              className="max-w-full max-h-64 rounded-lg border border-white/30 shadow-sm hover:shadow-md transition-shadow"
+                              onError={(e) => e.target.style.display = "none"}
+                            />
+                          </div>
+                        );
+                      })}
+
+                      {/* Audio Previews - Handle both File objects and stored data URLs */}
+                      {msg.attachedFiles && msg.attachedFiles.filter(f => f && f.type && f.type.startsWith("audio/")).map((f, i) => {
+                        const src = f instanceof File ? URL.createObjectURL(f) : (msg.fileDataUrls?.audio?.[i] || URL.createObjectURL(f));
+                        return (
+                          <div key={`audio-${i}`} className="flex items-center gap-2 bg-white/10 p-2 rounded-lg">
+                            <FaFileAudio className="text-green-500" />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium truncate text-white/80">{f.name}</p>
+                              <audio src={src} controls className="w-full h-6 mt-1" />
+                            </div>
+                          </div>
+                        );
+                      })}
+
+                      {/* Video Previews - Handle both File objects and stored data URLs */}
+                      {msg.attachedFiles && msg.attachedFiles.filter(f => f && f.type && f.type.startsWith("video/")).map((f, i) => {
+                        const src = f instanceof File ? URL.createObjectURL(f) : (msg.fileDataUrls?.video?.[i] || URL.createObjectURL(f));
+                        return (
+                          <div key={`video-${i}`} className="relative">
+                            <video
+                              src={src}
+                              controls
+                              className="max-w-full max-h-64 rounded-lg border border-white/30 shadow-sm hover:shadow-md transition-shadow"
+                            />
+                          </div>
+                        );
+                      })}
+
+                      {/* Other Files */}
+                      {msg.files && msg.files.filter(f => f && f.type && !f.type.startsWith("image/") && !f.type.startsWith("audio/") && !f.type.startsWith("video/")).map((f, i) => (
                         <button
-                          key={i}
-                          onClick={() => setPreviewFile(f)}
-                          className="text-xs bg-white/20 hover:bg-white/30 px-2 py-1 rounded flex items-center gap-1 transition"
-                          title="Click to preview"
+                          key={`file-${i}`}
+                          className="text-sm bg-white/20 hover:bg-white/30 px-2 py-1 rounded flex items-center gap-1 transition text-white/80 hover:text-white"
+                          title="File attachment"
                         >
                           {getFileIcon(f.type)} {f.name}
-                          <FaEye size={10} />
                         </button>
                       ))}
                     </div>
@@ -367,7 +534,7 @@ const ChatWindow = ({ messages, bottomRef, onFeedback, onEditSave }) => {
                       {/* COPY */}
                       <button
                         onClick={() => handleCopy(msg.id, msg.text)}
-                        className={`text-sm flex items-center gap-1 ${
+                        className={`text-base flex items-center gap-1 ${
                           copiedId === msg.id
                             ? "text-green-600 font-semibold"
                             : "text-gray-600 hover:text-gray-800"
@@ -388,7 +555,7 @@ const ChatWindow = ({ messages, bottomRef, onFeedback, onEditSave }) => {
                       {/* EDIT */}
                       <button
                         onClick={() => handleEditStart(msg.id, msg.text)}
-                        className="text-gray-600 hover:text-gray-800 text-sm flex items-center gap-1"
+                        className="text-gray-600 hover:text-gray-800 text-base flex items-center gap-1"
                         title="Edit"
                       >
                         <FaEdit size={14} /> Edit
@@ -402,7 +569,7 @@ const ChatWindow = ({ messages, bottomRef, onFeedback, onEditSave }) => {
                     {/* COPY */}
                     <button
                       onClick={() => handleCopy(msg.id, msg.text)}
-                      className={`text-xs md:text-sm flex items-center gap-1 px-2 py-1 rounded ${
+                      className={`text-sm md:text-base flex items-center gap-1 px-2 py-1 rounded ${
                         copiedId === msg.id
                           ? "text-green-600 font-semibold"
                           : "text-gray-500 hover:text-gray-700"
@@ -426,16 +593,18 @@ const ChatWindow = ({ messages, bottomRef, onFeedback, onEditSave }) => {
                     </button>
 
                     {/* DOWNLOAD DROPDOWN */}
+                    {/* COMMENTED OUT - Auto-download now handled based on user prompts */}
+                    {/*
                     <div className="relative download-menu-container">
                       <button
                         onClick={() => setDownloadMenuId(downloadMenuId === msg.id ? null : msg.id)}
-                        className="text-gray-500 hover:text-gray-700 text-xs md:text-sm flex items-center gap-1 px-2 py-1 rounded"
+                        className="text-gray-500 hover:text-gray-700 text-sm md:text-base flex items-center gap-1 px-2 py-1 rounded"
                         title="Download as..."
                       >
                         <FaDownload size={12} /> <span className="hidden sm:inline">Download</span>
                       </button>
                       
-                      {/* Dropdown Menu */}
+                      {/* Dropdown Menu *//*}
                       {downloadMenuId === msg.id && (
                         <div className="absolute right-0 mt-1 bg-white border border-gray-300 rounded-md shadow-lg z-50 min-w-max">
                           <button
@@ -458,13 +627,14 @@ const ChatWindow = ({ messages, bottomRef, onFeedback, onEditSave }) => {
                           </button>
                           <button
                             onClick={() => handleDownload(msg.text, 'pdf')}
-                            className="block w-full text-left px-4 py-2 text-xs hover:bg-gray-100 transition"
+                            className="block w-full text-left px-4 py-2 text-sm hover:bg-gray-100 transition"
                           >
                             📕 PDF
                           </button>
                         </div>
                       )}
                     </div>
+                    */}
 
                     {/* LIKE */}
                     <button
@@ -493,7 +663,7 @@ const ChatWindow = ({ messages, bottomRef, onFeedback, onEditSave }) => {
                             msg.feedback === "dislike" ? null : "dislike"
                           )
                         }
-                        className={`transition text-xs md:text-sm flex items-center gap-1 px-2 py-1 rounded ${
+                        className={`transition text-sm md:text-base flex items-center gap-1 px-2 py-1 rounded ${
                           msg.feedback === "dislike"
                             ? "text-red-600"
                             : "text-gray-500 hover:text-gray-700"
@@ -503,6 +673,26 @@ const ChatWindow = ({ messages, bottomRef, onFeedback, onEditSave }) => {
                         <FaThumbsDown size={12} /> <span className="hidden sm:inline">Dislike</span>
                       </button>
                     )}
+                    {/* SPEAKER */}
+                    <button
+                      onClick={() => handleSpeak(msg.text, msg.id)}
+                      className={`text-sm md:text-base flex items-center gap-1 px-2 py-1 rounded transition ${
+                        speakingId === msg.id
+                          ? "text-red-600 hover:text-red-700 font-semibold"
+                          : "text-gray-500 hover:text-gray-700"
+                      }`}
+                      title={speakingId === msg.id ? "Stop speaking" : "Speak"}
+                    >
+                      {speakingId === msg.id ? (
+                        <>
+                          <FaTimes size={12} /> <span className="hidden sm:inline">Stop</span>
+                        </>
+                      ) : (
+                        <>
+                          <FaVolumeUp size={12} /> <span className="hidden sm:inline">Speak</span>
+                        </>
+                      )}
+                    </button>
                   </div>
                 )}
                 </div>
@@ -518,7 +708,7 @@ const ChatWindow = ({ messages, bottomRef, onFeedback, onEditSave }) => {
           <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[80vh] overflow-auto">
             {/* Header */}
             <div className="flex justify-between items-center p-6 border-b border-gray-200 sticky top-0 bg-white">
-              <h3 className="text-lg font-semibold text-gray-800 truncate">{previewFile.name}</h3>
+              <h3 className="text-2xl font-semibold text-gray-800 truncate">{previewFile.name}</h3>
               <button
                 onClick={() => setPreviewFile(null)}
                 className="text-gray-500 hover:text-gray-700 transition"
@@ -540,16 +730,16 @@ const ChatWindow = ({ messages, bottomRef, onFeedback, onEditSave }) => {
               ) : previewFile.type.startsWith("audio/") ? (
                 <div className="space-y-4">
                   <audio src={previewFile.data} controls className="w-full" />
-                  <p className="text-sm text-gray-600">{previewFile.name}</p>
+                  <p className="text-base text-gray-600">{previewFile.name}</p>
                 </div>
               ) : (
                 <div className="bg-gray-100 rounded-lg p-6 text-center">
                   <div className="text-5xl mb-4">{getFileIcon(previewFile.type)}</div>
                   <p className="text-gray-600 font-medium">{previewFile.name}</p>
-                  <p className="text-sm text-gray-500 mt-2">
+                  <p className="text-base text-gray-500 mt-2">
                     {previewFile.type || "Unknown file type"}
                   </p>
-                  <p className="text-xs text-gray-400 mt-4">
+                  <p className="text-sm text-gray-400 mt-4">
                     Preview not available for this file type
                   </p>
                 </div>

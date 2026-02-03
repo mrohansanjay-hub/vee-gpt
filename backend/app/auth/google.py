@@ -21,13 +21,13 @@ if GOOGLE_CLIENT_ID:
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
 if GOOGLE_CLIENT_SECRET:
     GOOGLE_CLIENT_SECRET = GOOGLE_CLIENT_SECRET.strip()
-GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://127.0.0.1:8000/auth/google/callback")
+GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://www.vee-gpt.com/backend/auth/google/callback")
 if GOOGLE_REDIRECT_URI:
     GOOGLE_REDIRECT_URI = GOOGLE_REDIRECT_URI.strip()
 MONGO_URI = os.getenv("MONGO_URI", "")
 if MONGO_URI:
     MONGO_URI = MONGO_URI.strip()
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "https://www.vee-gpt.com")
 if FRONTEND_URL:
     FRONTEND_URL = FRONTEND_URL.strip()
 

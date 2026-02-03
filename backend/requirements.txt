@@ -11,3 +11,7 @@ google-search-results
 pydantic
 python-multipart
 itsdangerous
+Pillow
+PyPDF2
+pytesseract
+authlib

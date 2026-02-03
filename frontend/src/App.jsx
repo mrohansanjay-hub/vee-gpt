@@ -15,36 +15,77 @@ import {
   FaBolt,
   FaStar,
   FaRobot,
+  FaChevronUp,
+  FaReact,
 } from "react-icons/fa";
 
 import ChatWindow from "./components/ChatWindow";
 import PinDropdown from "./components/PinDropdown";
 import MenuBar from "./components/MenuBar";
 import Sidebar from "./components/Sidebar";
+import { isDownloadRequest, triggerDownload } from "./utils/downloadManager";
 import "./App.css";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const API_URL = import.meta.env.VITE_API_URL;
 
 export default function App() {
   const generateSessionId = () => Date.now().toString(36) + Math.random().toString(36).substr(2);
 
+  // ==================== ENCRYPTION UTILITIES ====================
+  // Simple encryption for email and session ID (obfuscation for URL safety)
+  const encryptString = (str) => {
+    try {
+      return btoa(str); // Base64 encode
+    } catch {
+      return str;
+    }
+  };
+
+  const decryptString = (str) => {
+    try {
+      return atob(str); // Base64 decode
+    } catch {
+      return str;
+    }
+  };
+
+  // Mask email for display (show only first 2 chars and domain)
+  const maskEmail = (email) => {
+    if (!email) return "";
+    const [name, domain] = email.split("@");
+    if (!name || !domain) return email;
+    return `${name.substring(0, 2)}****@${domain}`;
+  };
+
   // ------------------ STATE ------------------
   const [messages, setMessages] = useState(() => {
-    try {
-      const saved = localStorage.getItem("chat_messages");
-      return saved ? JSON.parse(saved) : [];
-    } catch (error) {
-      console.error("Failed to load messages from localStorage:", error);
-      return [];
-    }
+    // Always start with empty messages (fresh chat on every page open)
+    // Don't load from localStorage to prevent showing old chats
+    return [];
   });
   const [input, setInput] = useState("");
   const [sessionId, setSessionId] = useState(() => {
+    // Always generate a fresh session ID (don't load from storage)
+    // This ensures each page load creates a new chat
+    const newSession = generateSessionId();
+    sessionStorage.setItem("chat_session_id", newSession);
+    return newSession;
+  });
+  
+  // Load email from sessionStorage if present
+  const [email, setEmail] = useState(() => {
     try {
-      const saved = localStorage.getItem("chat_session_id");
-      return saved || generateSessionId();
+      const stored = sessionStorage.getItem("user_email");
+      if (stored) return stored;
+      
+      const saved = localStorage.getItem("user_email");
+      if (saved) {
+        sessionStorage.setItem("user_email", saved);
+        return saved;
+      }
+      return "";
     } catch (error) {
-      return generateSessionId();
+      return "";
     }
   });
   const [pinOpen, setPinOpen] = useState(false);
@@ -54,9 +95,91 @@ export default function App() {
   const [capturedImage, setCapturedImage] = useState(null);
   const [attachedFiles, setAttachedFiles] = useState([]);
   const [opencvReady, setOpencvReady] = useState(false);
+  const [showComingSoonModal, setShowComingSoonModal] = useState(false);
+
+  // Initialize attached files from localStorage on mount
+  useEffect(() => {
+    console.log("🔄 Attempting to restore attached files from localStorage...");
+    try {
+      const savedFilesData = localStorage.getItem("attached_files_data");
+      if (savedFilesData) {
+        const filesData = JSON.parse(savedFilesData);
+        console.log("📦 Found saved files data:", filesData.length, "files");
+        
+        // Convert back to File objects
+        const restoredFiles = filesData.map((fileData, idx) => {
+          try {
+            const binaryString = atob(fileData.data);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+              bytes[i] = binaryString.charCodeAt(i);
+            }
+            return new File([bytes], fileData.name, { type: fileData.type });
+          } catch (err) {
+            console.error(`Failed to restore file ${idx}:`, err);
+            return null;
+          }
+        }).filter(f => f !== null);
+        
+        if (restoredFiles.length > 0) {
+          setAttachedFiles(restoredFiles);
+          console.log("✅ Restored", restoredFiles.length, "attached files from localStorage");
+        }
+      } else {
+        console.log("ℹ️ No attached files found in localStorage");
+      }
+    } catch (error) {
+      console.error("❌ Failed to restore attached files:", error);
+    }
+  }, []);
+
+  // Save attached files to localStorage whenever they change
+  useEffect(() => {
+    try {
+      if (attachedFiles.length > 0) {
+        console.log("💾 Saving", attachedFiles.length, "files to localStorage...");
+        const filesToSave = attachedFiles.map(file => {
+          return {
+            name: file.name,
+            type: file.type,
+            size: file.size,
+            data: null // Will be filled after reading
+          };
+        });
+
+        // Read files and convert to base64
+        let filesProcessed = 0;
+        filesToSave.forEach((fileData, idx) => {
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            try {
+              fileData.data = e.target.result.split(',')[1]; // Get base64 part
+              filesProcessed++;
+              if (filesProcessed === filesToSave.length) {
+                localStorage.setItem("attached_files_data", JSON.stringify(filesToSave));
+                console.log("✅ Successfully saved", filesToSave.length, "files to localStorage");
+              }
+            } catch (err) {
+              console.error("Error processing file data:", err);
+              filesProcessed++;
+            }
+          };
+          reader.onerror = (err) => {
+            console.error("FileReader error for file", idx, ":", err);
+            filesProcessed++;
+          };
+          reader.readAsDataURL(attachedFiles[idx]);
+        });
+      } else {
+        localStorage.removeItem("attached_files_data");
+        console.log("🗑️ Cleared attached files from localStorage");
+      }
+    } catch (error) {
+      console.error("Failed to save attached files:", error);
+    }
+  }, [attachedFiles]);
 
   const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [email, setEmail] = useState("");
   const [name, setName] = useState("");
 
   const [showContact, setShowContact] = useState(false);
@@ -72,12 +195,15 @@ export default function App() {
   const [chatHistory, setChatHistory] = useState([]);
   const [model, setModel] = useState("gpt-4o-mini");
   const [modelOpen, setModelOpen] = useState(false);
+  const [showScrollButton, setShowScrollButton] = useState(false);
 
   // ------------------ REFS ------------------
   const bottomRef = useRef(null);
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const recognitionRef = useRef(null);
+  const chatContainerRef = useRef(null);
+  const textareaRef = useRef(null);
 
   // ------------------ LOAD OPENCV ------------------
   useEffect(() => {
@@ -112,16 +238,109 @@ export default function App() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages.length]);
 
+  // ------------------ SCROLL BUTTON VISIBILITY ------------------
+  useEffect(() => {
+    const handleScroll = () => {
+      if (chatContainerRef.current) {
+        const { scrollTop, scrollHeight, clientHeight } = chatContainerRef.current;
+        // Show button if not at bottom (more than 200px from bottom)
+        setShowScrollButton(scrollHeight - scrollTop - clientHeight > 200);
+      }
+    };
+
+    const container = chatContainerRef.current;
+    if (container) {
+      container.addEventListener("scroll", handleScroll);
+      return () => container.removeEventListener("scroll", handleScroll);
+    }
+  }, []);
+
+  // ------------------ SCROLL TO BOTTOM ------------------
+  const handleScrollToBottom = () => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  // ------------------ PASTE IMAGE HANDLER ------------------
+  const handlePaste = async (e) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+
+    for (let item of items) {
+      // Check if clipboard contains image data
+      if (item.type.startsWith("image/")) {
+        e.preventDefault();
+        const blob = item.getAsFile();
+        if (blob) {
+          // Convert blob to File object
+          const file = new File([blob], `screenshot-${Date.now()}.png`, { type: item.type });
+          
+          // Add to attached files
+          setAttachedFiles((prev) => {
+            const key = `${file.name}_${file.size}`;
+            if (!prev.some((f) => `${f.name}_${f.size}` === key)) {
+              return [...prev, file];
+            }
+            return prev;
+          });
+        }
+        break; // Only process first image
+      }
+    }
+  };
+
+  // Attach paste handler to textarea
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (textarea) {
+      textarea.addEventListener("paste", handlePaste);
+      return () => textarea.removeEventListener("paste", handlePaste);
+    }
+  }, []);
+
+  // ==================== PREVENT ACCIDENTAL PAGE RELOADS ====================
+  // Intercept any unintended navigation or reload attempts
+  useEffect(() => {
+    const preventReload = (e) => {
+      // Only prevent if we're in the middle of operations
+      if (isProcessing || input.trim() || attachedFiles.length > 0) {
+        // Allow user to close but prevent auto-refresh
+        // Don't interfere with normal navigation
+      }
+    };
+
+    window.addEventListener("beforeunload", preventReload);
+    return () => window.removeEventListener("beforeunload", preventReload);
+  }, [isProcessing, input, attachedFiles]);
+
   // ------------------ PERSISTENCE ------------------
   useEffect(() => {
     localStorage.setItem("chat_messages", JSON.stringify(messages));
     localStorage.setItem("chat_session_id", sessionId);
   }, [messages, sessionId]);
 
+  // Keep URL clean - store sensitive data in sessionStorage, not URL
+  useEffect(() => {
+    // Store session ID and email in sessionStorage for privacy
+    if (sessionId) {
+      sessionStorage.setItem("chat_session_id", sessionId);
+    }
+    if (email) {
+      sessionStorage.setItem("user_email", email);
+    }
+    
+    // Keep URL clean with no sensitive parameters
+    const params = new URLSearchParams(window.location.search);
+    params.delete("session");
+    params.delete("email");
+    window.history.replaceState({}, document.title, `?${params.toString()}`);
+  }, [sessionId, email]);
+
   // ------------------ HANDLE ACCOUNT ------------------
   const handleAccount = async (user) => {
     if (!user) {
-      // LOGOUT: Clear everything immediately
+      // LOGOUT: Clear everything immediately (but preserve attached files)
+      const savedFiles = localStorage.getItem("attached_files_data"); // Save files before clearing
+      
       setIsLoggedIn(false);
       setEmail("");
       setName("");
@@ -133,6 +352,11 @@ export default function App() {
       localStorage.removeItem('chat_session_id');  // Clear session ID
       setShowLoginModal(true);  // Show login popup immediately
       setSidebarOpen(false);  // Close sidebar
+      
+      // Restore attached files after clearing other data
+      if (savedFiles) {
+        localStorage.setItem("attached_files_data", savedFiles);
+      }
       
       // Logout from backend session
       try {
@@ -293,7 +517,6 @@ export default function App() {
       console.error("Failed to delete chat:", error);
     }
   };
-  const textareaRef = useRef(null);
 
   const handleGoogleLogin = () => {
     window.location.href = `${API_URL}/auth/google/login`;
@@ -453,11 +676,38 @@ export default function App() {
       // This keeps the UI clean immediately
     } else {
       // Normal flow: Add user message
+      // Convert File objects to data URLs for persistence
+      const fileDataUrls = { images: [], audio: [], video: [] };
+      const filePromises = filesToSend.map(file => {
+        return new Promise((resolve) => {
+          if (file instanceof File) {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+              const dataUrl = e.target.result;
+              if (file.type.startsWith("image/")) {
+                fileDataUrls.images.push(dataUrl);
+              } else if (file.type.startsWith("audio/")) {
+                fileDataUrls.audio.push(dataUrl);
+              } else if (file.type.startsWith("video/")) {
+                fileDataUrls.video.push(dataUrl);
+              }
+              resolve();
+            };
+            reader.readAsDataURL(file);
+          } else {
+            resolve();
+          }
+        });
+      });
+      await Promise.all(filePromises);
+
       const newUserMsg = {
         id: Date.now(),
         role: "user",
         text: textToSend,
         files: filesToSend.map(f => ({ name: f.name, type: f.type })),
+        attachedFiles: filesToSend, // Store actual File objects for preview
+        fileDataUrls: Object.keys(fileDataUrls).some(k => fileDataUrls[k].length > 0) ? fileDataUrls : null, // Store data URLs for persistence
         isHidden: false,
       };
       updatedMessages = [...messages, newUserMsg];
@@ -470,12 +720,17 @@ export default function App() {
   textareaRef.current.style.height = "auto";
 }
     setIsProcessing(true);
+    
+    // Check if user is asking for download
+    const shouldAutoDownload = isDownloadRequest(textToSend);
+    console.log(`📥 Auto-download check: ${shouldAutoDownload ? 'YES - Will auto-download response' : 'NO'}`);
 
     // Create new abort controller for this request
     abortControllerRef.current = new AbortController();
 
     try {
       const uploadedFiles = [];
+      let imageUrlsForVision = []; // Track image URLs for Vision API
 
       for (const file of filesToSend) {
         const formData = new FormData();
@@ -495,18 +750,45 @@ export default function App() {
           name: file.name,
           text: data.text || "[No text extracted]",
         });
+        
+        // If it's an image, store the S3 URL for Vision API
+        if (file.type.startsWith("image/") && data.image_url) {
+          imageUrlsForVision.push(data.image_url);
+        }
       }
 
       let combined = textToSend;
       uploadedFiles.forEach((f) => {
         combined += `\n\n[File: ${f.name}]\n${f.text}`;
       });
+      
+      // Add image URLs to the message so backend can extract and use them with Vision API
+      if (imageUrlsForVision.length > 0) {
+        combined += `\n\n${imageUrlsForVision.join("\n")}`;
+      }
 
-      const conversation = [
-        { role: "system", content: "You are a helpful AI assistant. When asked to process files (beautify, ATS resume, format), rewrite the content completely in the requested format. Wrap the processed content in a markdown code block (```). Do NOT include conversational text inside the code block. Provide a link '[Download Processed File](#download)'." },
-        ...messages.map((m) => ({ role: m.role, content: m.text })),
-        { role: "user", content: combined },
-      ];
+      // Build conversation differently for continuation vs normal message
+      let conversation;
+      if (isContinuation) {
+        // For continuation: Send ONLY the last user message and incomplete assistant response
+        // This tells OpenAI we're ALREADY in a conversation and just need to continue
+        const lastUserMsg = messages.findLast(m => m.role === "user");
+        const lastAssistantMsg = messages.findLast(m => m.role === "assistant");
+        
+        conversation = [
+          { role: "system", content: "You are a helpful AI assistant. Continue the response from where it was interrupted. Do NOT add any preamble, greeting, or explanation. Simply continue writing the next content naturally." },
+          lastUserMsg ? { role: "user", content: lastUserMsg.text } : { role: "user", content: "Continue" },
+          lastAssistantMsg ? { role: "assistant", content: lastAssistantMsg.text } : null,
+        ].filter(msg => msg !== null);
+      } else {
+        // Normal flow: Send full conversation history
+        conversation = [
+          { role: "system", content: "You are a helpful AI assistant." },
+          ...messages.map((m) => ({ role: m.role, content: m.text })),
+          { role: "user", content: combined },
+        ];
+      }
+      
       // Only add a new assistant placeholder if it's NOT a continuation
       // If it IS a continuation, we will append to the existing last message in the stream loop
       if (!isContinuation) {
@@ -540,7 +822,21 @@ export default function App() {
               const data = JSON.parse(line.slice(6));
               
               // Handle typed events
-              if (data.type === "images") {
+              if (data.type === "beautified_image") {
+                // Beautified image sent (typed event)
+                imageUrls = [data.data];
+                setMessages((prev) => {
+                  const msgs = [...prev];
+                  const lastIdx = isContinuation ? msgs.findLastIndex(m => m.role === "assistant") : msgs.length - 1;
+                  if (lastIdx !== -1) {
+                    msgs[lastIdx].images = imageUrls;
+                    msgs[lastIdx].image_url = imageUrls;
+                    msgs[lastIdx].beautified = true; // Mark as beautified
+                    msgs[lastIdx].isComplete = true; // Mark as complete after image is received
+                  }
+                  return msgs;
+                });
+              } else if (data.type === "images") {
                 // Images sent first (typed event)
                 imageUrls = data.data || [];
                 setMessages((prev) => {
@@ -570,6 +866,12 @@ export default function App() {
                   }
                   return msgs;
                 });
+                // Auto-scroll to bottom when receiving chunks
+                setTimeout(() => {
+                  if (bottomRef.current) {
+                    bottomRef.current.scrollIntoView({ behavior: "smooth" });
+                  }
+                }, 10);
               } else if (data.type === "final") {
                 // Final response (typed event)
                 console.log('✅ Final response received with', (data.images || imageUrls).length, 'images');
@@ -634,9 +936,13 @@ export default function App() {
         console.error('Error during response:', err);
         setMessages((prev) => {
           const msgs = [...prev];
-          msgs[msgs.length - 1].text = "Error: Backend connection failed";
+          if (msgs[msgs.length - 1]) {
+            msgs[msgs.length - 1].text = "Error: Backend connection failed";
+            msgs[msgs.length - 1].isComplete = true;
+          }
           return msgs;
         });
+        // Do NOT reload or refresh - just show error message
       } else {
         console.log('Response generation stopped by user');
         // Mark message as complete with stopped status
@@ -651,6 +957,39 @@ export default function App() {
     } finally {
       setIsProcessing(false);
       abortControllerRef.current = null;
+      
+      // Auto-download response if user requested download
+      if (shouldAutoDownload) {
+        // Wait a bit for message to be fully rendered, then trigger download
+        setTimeout(async () => {
+          // Get the latest messages from current state
+          setMessages(currentMsgs => {
+            const lastMsg = currentMsgs[currentMsgs.length - 1];
+            if (lastMsg?.role === "assistant" && lastMsg?.text) {
+              console.log("📥 Triggering auto-download of response");
+              console.log("Response content length:", lastMsg.text.length);
+              
+              // Trigger download asynchronously (don't wait for setMessages callback)
+              (async () => {
+                try {
+                  const filename = `response-${new Date().toISOString().slice(0, 10)}`;
+                  console.log("📥 Calling triggerDownload with format detection from:", textToSend);
+                  const result = await triggerDownload(lastMsg.text, filename, textToSend);
+                  console.log("✅ Download triggered successfully", result);
+                } catch (error) {
+                  console.error("❌ Auto-download failed:", error);
+                  console.error("Error details:", error.message);
+                  // Show coming soon modal if feature not available
+                  if (error.message === 'COMING_SOON') {
+                    setShowComingSoonModal(true);
+                  }
+                }
+              })();
+            }
+            return currentMsgs; // Always return current messages unchanged
+          });
+        }, 1500); // Increased delay to ensure message is fully rendered and PPTX generation completes
+      }
     }
   };
 
@@ -659,23 +998,55 @@ export default function App() {
     const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
     recognition.continuous = true;
     recognition.interimResults = true;
-    recognition.lang = language;
+    
+    // Support multiple languages - don't limit to specific language
+    // The Web Speech API will try to use the browser's default, but will accept any language
+    recognition.lang = language || "en-US";
+    
+    // Track the last result index we've added to prevent duplicates
+    let lastAddedIndex = -1;
 
     recognition.onresult = (e) => {
       let transcript = "";
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        transcript += e.results[i][0].transcript;
+      let newFinalResults = false;
+      
+      // Only process NEW results that we haven't added yet
+      for (let i = Math.max(e.resultIndex, lastAddedIndex + 1); i < e.results.length; i++) {
+        const result = e.results[i];
+        
+        // Only add if this result is FINAL (not interim)
+        if (result.isFinal) {
+          transcript += result[0].transcript;
+          lastAddedIndex = i;
+          newFinalResults = true;
+        }
       }
-      setInput(transcript);
+      
+      // Only update input if we have new final results
+      if (newFinalResults && transcript) {
+        setInput((prevInput) => {
+          // Add space between previous text and new transcript if needed
+          return prevInput ? prevInput + " " + transcript : transcript;
+        });
+      }
     };
 
     recognition.onstart = () => {
       setRecording(true);
       setMicBlink(true);
     };
+    
     recognition.onend = () => {
       setRecording(false);
       setMicBlink(false);
+      lastAddedIndex = -1; // Reset for next recording session
+    };
+    
+    recognition.onerror = (e) => {
+      console.error("Speech recognition error:", e.error);
+      setRecording(false);
+      setMicBlink(false);
+      lastAddedIndex = -1; // Reset on error
     };
 
     recognition.start();
@@ -789,11 +1160,13 @@ export default function App() {
     email={email}
     name={name}
     onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
+    language={language}
+    onLanguageChange={setLanguage}
   />
 </div>
 
       <div className="flex-1 flex justify-center overflow-hidden min-h-0">
-        <div className="w-full flex flex-col bg-white md:rounded-lg md:shadow-lg overflow-hidden min-h-0 [&_img]:max-w-full [&_img]:h-auto">
+        <div ref={chatContainerRef} className="w-full flex flex-col bg-white md:rounded-lg md:shadow-lg overflow-hidden min-h-0 [&_img]:max-w-full [&_img]:h-auto overflow-y-auto">
           <ChatWindow messages={messages.filter(m => !m.isHidden)} bottomRef={bottomRef} onFeedback={handleMessageFeedback} onEditSave={handleEditSave} />
         </div>
       </div>
@@ -803,10 +1176,10 @@ export default function App() {
       {showContact && (
         <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-[60]">
           <div className="bg-white p-6 rounded-xl shadow-2xl w-full max-w-sm mx-4">
-            <h2 className="font-bold mb-3 text-xl text-gray-800">Contact Us</h2>
+            <h2 className="font-bold mb-3 text-3xl text-gray-800">Contact Us</h2>
 
             <select
-              className="w-full border p-2 mb-3 bg-white text-black rounded"
+              className="w-full border p-3 mb-3 bg-white text-black rounded text-lg"
               value={feedbackType}
               onChange={(e) => setFeedbackType(e.target.value)}
             >
@@ -816,7 +1189,7 @@ export default function App() {
             </select>
 
             <textarea
-              className="w-full border p-2 h-28 bg-white text-black rounded placeholder-gray-400"
+              className="w-full border p-3 h-28 bg-white text-black rounded placeholder-gray-400 text-lg"
               placeholder="Type your message..."
               value={feedbackText}
               onChange={(e) => setFeedbackText(e.target.value)}
@@ -843,20 +1216,76 @@ export default function App() {
 
       {/* ATTACHED FILES DISPLAY ABOVE FOOTER */}
       {attachedFiles.length > 0 && (
-        <div className="flex items-center gap-2 p-2 bg-gray-50 border-t overflow-x-auto" >
-          {attachedFiles.map((f, idx) => (
-            <div key={`${f.name}_${f.size}_${idx}`} className="px-2 py-1 bg-gray-100 rounded text-sm flex items-center gap-1">              {f.type.startsWith("image/") ? <FaFileImage size={14} /> :
-               f.type.startsWith("video/") ? <FaFileVideo size={14} /> :
-               f.type.startsWith("audio/") ? <FaFileAudio size={14} /> :
-               <FaFile size={14} />}              {f.name}
-              <button
-                onClick={() => removeFile(idx)}
-                className="text-red-600 hover:text-red-800"
-              >
-                {'\u00D7'}
-              </button>
-            </div>
-          ))}
+        <div className="p-1 bg-gray-50 border-t">
+          <div className="grid grid-cols-6 sm:grid-cols-8 gap-1 overflow-y-auto max-h-32">
+            {attachedFiles.map((f, idx) => (
+              <div key={`${f.name}_${f.size}_${idx}`} className="bg-white rounded-lg border border-gray-200 overflow-hidden hover:shadow-md transition-shadow relative">
+                {/* Image Preview */}
+                {f.type.startsWith("image/") && (
+                  <div className="relative group w-full h-16">
+                    <img
+                      src={URL.createObjectURL(f)}
+                      alt={f.name}
+                      className="w-full h-full object-cover"
+                      onError={(e) => e.target.style.display = "none"}
+                    />
+                    <button
+                      onClick={() => removeFile(idx)}
+                      className="absolute top-0 right-0 bg-red-500 hover:bg-red-600 text-white rounded-full p-0.5 shadow-lg opacity-0 group-hover:opacity-100 transition-opacity text-xs"
+                      title="Remove file"
+                    >
+                      {'\u00D7'}
+                    </button>
+                  </div>
+                )}
+
+                {/* Audio Preview */}
+                {f.type.startsWith("audio/") && (
+                  <div className="p-1 flex flex-col items-center justify-center h-16 gap-0.5">
+                    <FaFileAudio size={16} className="text-green-500" />
+                    <button
+                      onClick={() => removeFile(idx)}
+                      className="text-red-500 hover:text-red-700 text-xs"
+                      title="Remove"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                )}
+
+                {/* Video Preview */}
+                {f.type.startsWith("video/") && (
+                  <div className="relative group w-full h-16">
+                    <video
+                      src={URL.createObjectURL(f)}
+                      className="w-full h-full object-cover"
+                    />
+                    <button
+                      onClick={() => removeFile(idx)}
+                      className="absolute top-0 right-0 bg-red-500 hover:bg-red-600 text-white rounded-full p-0.5 shadow-lg opacity-0 group-hover:opacity-100 transition-opacity text-xs"
+                      title="Remove file"
+                    >
+                      {'\u00D7'}
+                    </button>
+                  </div>
+                )}
+
+                {/* Other Files */}
+                {!f.type.startsWith("image/") && !f.type.startsWith("audio/") && !f.type.startsWith("video/") && (
+                  <div className="p-1 flex flex-col items-center justify-center h-16 gap-0.5">
+                    <FaFile size={16} className="text-gray-500" />
+                    <button
+                      onClick={() => removeFile(idx)}
+                      className="text-red-500 hover:text-red-700 text-xs"
+                      title="Remove"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -891,7 +1320,7 @@ export default function App() {
             </button>
           </div>
           <textarea
-            className="w-full border border-gray-200 p-3 rounded-lg text-sm mb-3 h-32 resize-none focus:ring-2 focus:ring-red-500 focus:border-transparent outline-none bg-gray-50"
+            className="w-full border border-gray-200 p-3 rounded-lg text-base mb-3 h-32 resize-none focus:ring-2 focus:ring-red-500 focus:border-transparent outline-none bg-gray-50"
             placeholder="Describe the bug or issue..."
             value={bugText}
             onChange={(e) => setBugText(e.target.value)}
@@ -899,13 +1328,27 @@ export default function App() {
           <div className="flex justify-end">
             <button
               onClick={handleBugSubmit}
-              className="bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-red-700 transition-colors shadow-md"
+              className="bg-red-600 text-white px-4 py-2 rounded-lg text-base font-medium hover:bg-red-700 transition-colors shadow-md"
             >
               Submit Report
             </button>
           </div>
         </div>
         </>
+      )}
+
+      {/* SCROLL TO BOTTOM BUTTON */}
+      {showScrollButton && (
+        <div className="absolute bottom-24 left-1/2 transform -translate-x-1/2 z-40">
+          <button
+            onClick={handleScrollToBottom}
+            className="bg-white text-indigo-600 border border-indigo-200 px-4 py-2 rounded-full shadow-lg hover:bg-indigo-50 transition-all text-base font-medium flex items-center gap-2"
+            title="Scroll to bottom"
+          >
+            <FaChevronDown size={14} />
+            New messages
+          </button>
+        </div>
       )}
 
       {/* CONTINUE BUTTON */}
@@ -921,34 +1364,37 @@ export default function App() {
       )}
 
       {/* FOOTER */}
-      <footer className="sticky bottom-0 z-50 flex p-2 bg-white border-t border-gray-200 items-center gap-1 sm:gap-2">
+      <footer className={`sticky bottom-0 z-40 flex p-2 bg-white border-t border-gray-200 items-center gap-1 sm:gap-2 md:z-40 transition-opacity ${sidebarOpen ? 'md:opacity-100 opacity-30 pointer-events-none md:pointer-events-auto' : 'opacity-100'}`}>
         <div className="pin-container relative flex-shrink-0">
           <button
             onClick={(e) => {
               e.stopPropagation();
-              setPinOpen(!pinOpen);
+              if (!sidebarOpen) setPinOpen(!pinOpen);
             }}
-            className="text-gray-500 hover:text-gray-700 p-2 rounded-full hover:bg-gray-100 transition-colors"
+            className="text-gray-500 hover:text-gray-700 p-2 rounded-full hover:bg-gray-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={sidebarOpen}
           >
             <FaPaperclip size={18} />
           </button>
-          {pinOpen && <PinDropdown onSelect={handleFilesSelect} />}
+          {pinOpen && !sidebarOpen && <PinDropdown onSelect={handleFilesSelect} />}
         </div>
 
         {/* Model Selector */}
         <div className="relative model-selector-container">
           <button
-            onClick={() => setModelOpen(!modelOpen)}
-            className={`text-gray-500 hover:text-gray-700 p-2 rounded-full hover:bg-gray-100 transition-colors flex items-center justify-center ${modelOpen ? 'bg-white text-indigo-600 shadow-sm ring-1 ring-gray-200' : ''}`}
+            onClick={() => {
+              if (!sidebarOpen) setModelOpen(!modelOpen);
+            }}
+            className={`text-gray-500 hover:text-gray-700 p-2 rounded-full hover:bg-gray-100 transition-colors flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed ${modelOpen && !sidebarOpen ? 'bg-white text-indigo-600 shadow-sm ring-1 ring-gray-200' : ''}`}
             title="Select Model"
-            
+            disabled={sidebarOpen}
           >
-            <FaChevronDown size={18} className={`transition-transform ${modelOpen ? 'rotate-180' : ''}`} />
+            <FaChevronDown size={18} className={`transition-transform ${modelOpen && !sidebarOpen ? 'rotate-180' : ''}`} />
           </button>
           
-          {modelOpen && (
-            <div className="absolute bottom-full left-0 mb-2 w-64  rounded-xl shadow-2xl border border-gray-100 overflow-hidden z-50 flex flex-col" style={{backgroundColor: modelOpen ? '#eef2ff' : 'white'}}>
-              <div className="px-4 py-2 border-b border-gray-100 text-xs font-semibold text-gray-500 uppercase tracking-wider">
+          {modelOpen && !sidebarOpen && (
+            <div className="absolute bottom-full left-0 mb-2 w-64 rounded-xl shadow-2xl border border-gray-100 overflow-hidden z-50 flex flex-col" style={{backgroundColor: modelOpen ? '#eef2ff' : 'white'}}>
+              <div className="px-4 py-2 border-b border-gray-100 text-sm font-semibold text-gray-500 uppercase tracking-wider">
                 Select Model
               </div>
               {[
@@ -958,14 +1404,14 @@ export default function App() {
               ].map((opt) => (
                 <button
                   key={opt.id}
-                  onClick={() => { setModel(opt.id); setModelOpen(false); }}
-                  className={`px-4 py-3 text-left text-sm hover:bg-white transition-colors flex items-center gap-3 whitespace-nowrap ${
-                    model === opt.id ? 'text-indigo-600 font-semibold' : 'text-gray-700'
-                  }`}
+                  onClick={() => {
+                    setModel(opt.id);
+                    setModelOpen(false);
+                  }}
+                  className="flex items-center gap-3 px-4 py-2 hover:bg-indigo-100 transition text-base"
                 >
-                  <span className="text-lg">{opt.icon}</span>
-                  <span className={`font-medium ${model === opt.id ? 'font-bold' : ''}`}>{opt.label}</span>
-                  {model === opt.id && <div className="ml-auto w-2 h-2 rounded-full bg-indigo-600"></div>}
+                  {opt.icon}
+                  <span>{opt.label}</span>
                 </button>
               ))}
             </div>
@@ -988,7 +1434,7 @@ export default function App() {
   }}
   rows={1}
   placeholder="Type your prompt..."
-  className="flex-1 min-w-0 resize-none py-3 px-4 text-base md:text-sm border rounded-2xl shadow-sm 
+  className="flex-1 min-w-0 resize-none py-3 px-4 text-lg md:text-base border rounded-2xl shadow-sm 
     bg-gray-50 dark:bg-gray-800 
     text-black dark:text-white 
     placeholder-gray-500 dark:placeholder-gray-400
@@ -1011,7 +1457,7 @@ export default function App() {
 
         <button
           onClick={() => isProcessing ? handleStopGeneration() : sendMessage(null)}
-          className={`p-2 rounded-full flex-shrink-0 transition-all shadow-md ${
+          className={`p-2.5 rounded-full flex-shrink-0 transition-all shadow-md ${
             isProcessing 
               ? "bg-red-500 text-white hover:bg-red-600" 
               : "bg-indigo-600 text-white hover:bg-indigo-700"
@@ -1019,12 +1465,9 @@ export default function App() {
           title={isProcessing ? "Stop generation" : "Send message"}
         >
           {isProcessing ? (
-            <>
-              <span className="inline-block mr-1">⏹</span>
-              
-            </>
+            <FaReact size={20} className="ml-0.5 animate-spin" />
           ) : (
-            <FaPaperPlane size={16} className="ml-0.5" />
+            <FaPaperPlane size={18} className="ml-0.5" />
           )}
         </button>
       </footer>
@@ -1078,7 +1521,7 @@ export default function App() {
             className="bg-white p-8 rounded-xl shadow-2xl text-center max-w-sm mx-4 w-full"
             onClick={(e) => e.stopPropagation()}
           >
-            <h2 className="text-2xl font-bold mb-6 text-gray-800">Welcome</h2>
+            <h2 className="text-4xl font-bold mb-6 text-gray-800">Welcome</h2>
             
             {/* Google Login */}
             <button
@@ -1091,7 +1534,7 @@ export default function App() {
 
             <div className="relative mb-6">
               <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-gray-300"></div></div>
-              <div className="relative flex justify-center text-sm"><span className="px-2 bg-white text-gray-500">Or enter email</span></div>
+              <div className="relative flex justify-center text-base"><span className="px-2 bg-white text-gray-500">Or enter email</span></div>
             </div>
 
             {/* Manual Email */}
@@ -1115,9 +1558,32 @@ export default function App() {
             {/* Ask me later */}
             <button
               onClick={() => setShowLoginModal(false)}
-              className="text-gray-500 hover:text-gray-700 text-sm underline"
+              className="text-gray-500 hover:text-gray-700 text-base underline"
             >
               Ask me later
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* COMING SOON MODAL */}
+      {showComingSoonModal && (
+        <div 
+          className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-[100]"
+          onClick={() => setShowComingSoonModal(false)}
+        >
+          <div 
+            className="bg-white p-8 rounded-xl shadow-2xl text-center max-w-sm mx-4 w-full"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="text-4xl font-bold mb-2 text-gray-800">Coming Soon!</h2>
+            <p className="text-gray-600 text-lg mb-8">PowerPoint presentation export is currently not available, but we're working on it. Stay tuned!</p>
+            
+            <button 
+              onClick={() => setShowComingSoonModal(false)}
+              className="w-full bg-indigo-600 text-white px-6 py-3 rounded-lg hover:bg-indigo-700 transition duration-300 shadow-md font-medium"
+            >
+              Got it!
             </button>
           </div>
         </div>

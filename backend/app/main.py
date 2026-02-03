@@ -33,7 +33,7 @@ from app.services.video_processors import extract_text_from_video
 load_dotenv()
 
 # Google OAuth router
-from app.auth.google import router as google_auth_router
+from app.auth.google import router as auth_router
 
 # Load and normalize environment variables (strip surrounding whitespace)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
@@ -109,8 +109,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include Google OAuth router
-app.include_router(google_auth_router, prefix="/auth/google", tags=["Google Auth"])
+# Include auth router
+app.include_router(auth_router, prefix="/auth/google", tags=["Auth"])
 
 # --------------------------------------------------
 # Models
@@ -120,6 +120,7 @@ class ChatRequest(BaseModel):
     email: str | None = None
     session_id: str | None = None
     model: str | None = "gpt-4o-mini"
+    is_large_code: bool | None = False  # Flag for large code chunks
 
 class ChatUpdate(BaseModel):
     title: str | None = None
@@ -203,6 +204,33 @@ def serialize_mongo(doc):
     if isinstance(doc, datetime):
         return doc.isoformat()
     return doc
+
+def count_tokens_estimate(text: str) -> int:
+    """Estimate token count (rough estimate: 1 token ≈ 4 characters)"""
+    return len(text) // 4
+
+def split_large_code(text: str, max_tokens: int = 5000) -> list[str]:
+    """Split large code into chunks based on token count"""
+    max_chars = max_tokens * 4
+    lines = text.split('\n')
+    chunks = []
+    current_chunk = []
+    current_size = 0
+    
+    for line in lines:
+        line_size = len(line) + 1  # +1 for newline
+        if current_size + line_size > max_chars and current_chunk:
+            chunks.append('\n'.join(current_chunk))
+            current_chunk = [line]
+            current_size = line_size
+        else:
+            current_chunk.append(line)
+            current_size += line_size
+    
+    if current_chunk:
+        chunks.append('\n'.join(current_chunk))
+    
+    return chunks
 
 # --------------------------------------------------
 # Health check
@@ -342,8 +370,39 @@ async def chat(request: Request, payload: ChatRequest):
     messages = payload.messages
     email = payload.email
     session_id = payload.session_id
+    is_large_code = payload.is_large_code
+    
     if not messages or not messages[-1].get('content'):
         raise HTTPException(status_code=400, detail="Messages required")
+    
+    # Validate message size
+    last_message_content = messages[-1].get('content', '')
+    if isinstance(last_message_content, str):
+        content_size = len(last_message_content)
+        if content_size > 500000:  # 500KB limit
+            raise HTTPException(status_code=413, detail=f"Message too large. Max 500KB. Got {content_size} bytes")
+        
+        # Print warning if large code
+        if content_size > 100000:
+            print(f"⚠️ Large code input detected: {content_size} bytes ({content_size/1024:.1f} KB)")
+
+    # Extract images from the last user message if they contain image URLs
+    image_urls_in_message = []
+    last_message = messages[-1]
+    content = last_message.get('content', '')
+    
+    # Check if message contains S3 image URLs - supports both:
+    # 1. bucket.s3.region.amazonaws.com (with region)
+    # 2. bucket.s3.amazonaws.com (without region - default US East 1)
+    # Match until whitespace or quote to avoid capturing trailing punctuation
+    s3_pattern = r'https://[^/]+\.s3(?:\.[^/]+)?\.amazonaws\.com/uploads/[^\s"\)]*'
+    image_urls_in_message = re.findall(s3_pattern, content)
+    
+    print(f"🖼️ Image URLs found: {image_urls_in_message}")
+    print(f"📝 Content: {content[:200]}")  # Debug: show first 200 chars
+    
+    # Clean content to remove image URLs before sending to OpenAI
+    clean_content = re.sub(s3_pattern, '', content).strip()
 
     ip = request.client.host
     ua = request.headers.get("user-agent", "")
@@ -387,6 +446,46 @@ async def chat(request: Request, payload: ChatRequest):
         tracking_collection.insert_one(tracking_data)
     else:
         tracking_collection.update_one({"_id": tracking["_id"]}, {"$set": tracking_data})
+
+    # Update the last message with clean content
+    messages_to_send = [msg.copy() if isinstance(msg, dict) else msg for msg in messages]
+    if messages_to_send and isinstance(messages_to_send[-1], dict):
+        messages_to_send[-1]['content'] = clean_content if clean_content else content
+    
+    # ==================== VISION API LOGIC ====================
+    # Strategy: If image has text → OCR (optional), Else → Vision Model
+    final_messages = messages_to_send.copy()
+    
+    if image_urls_in_message:
+        print(f"📸 Processing {len(image_urls_in_message)} image(s) with Vision API")
+        # Build Vision API message with images
+        vision_content = []
+        
+        # Add text prompt
+        text_prompt = clean_content if clean_content else "Please analyze this image and describe what you see. Provide detailed information about the objects, people, scenes, or any other visual elements in the image."
+        vision_content.append({
+            "type": "text",
+            "text": text_prompt
+        })
+        
+        # Add all images
+        for img_url in image_urls_in_message:
+            print(f"  Adding image to Vision API: {img_url}")
+            vision_content.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": img_url,
+                    "detail": "high"  # Use high detail for better analysis
+                }
+            })
+        
+        # Create vision message and replace the last user message
+        vision_message = {
+            "role": "user",
+            "content": vision_content
+        }
+        final_messages[-1] = vision_message
+        print(f"✅ Vision API message prepared with {len(vision_content)} content items")
 
     # System prompt
     system_prompt = """
@@ -461,7 +560,6 @@ IMPORTANT FOR CONTENT:
 - Use simple, easy-to-understand language.
 - Keep explanations structured and logical.
 - Avoid unnecessary complexity unless explicitly requested.
-- When providing links (e.g., downloads), format them as [**Link**](URL) or [**Download Link**](URL) to highlight them.
 - Separate main sections with a horizontal rule ("---") to improve readability.
 
 ========================
@@ -470,8 +568,8 @@ STEP-BY-STEP GUIDES
 For "how-to" or installation requests (e.g., "how to download VSCode"):
 - Break the answer into distinct steps (e.g., **Step 1:**, **Step 2:**).
 - Add a horizontal rule ("---") with blank lines before and after it between every step and section to clearly separate them.
-- In Step 1, provide the official download link formatted as [**Download Link**](URL).
-- Follow with installation and configuration steps.
+- Provide clear instructions for downloading and installing.
+- Do NOT provide actual download URLs in responses - just point to official websites.
 
 ========================
 GENERAL RULES
@@ -482,12 +580,73 @@ GENERAL RULES
 - Ask clarifying questions ONLY if absolutely necessary.
 
 ========================
+IMAGE VISION ANALYSIS (CRITICAL)
+========================
+When the user uploads an image or mentions an image file:
+- **You CAN view and analyze images** - Images are sent to you via Vision API
+- Describe what you see in EXTREME DETAIL: objects, people, text, scenes, colors, composition, materials, brands, models
+- **ANALYZE EVERYTHING**: vehicles (model, brand, color, features), people (appearance, clothing, expressions), products (name, features, specs), scenes (location, context, elements)
+- If the image contains readable text → Extract and explain the text
+- If the image shows objects/scenes → Provide comprehensive visual analysis
+- **NEVER say** "I cannot view images" or "I cannot see what's in the image" or "I did not receive an image"
+- **NEVER ask the user to describe the image** - YOU can see it, you describe it!
+- Always provide comprehensive, detailed descriptions of images
+- For vehicles: mention brand, model, color, features, condition, accessories
+- For product images: describe name, brand, features, design, colors, materials, uses
+- For photos: describe people, expressions, clothing, setting, context, mood, lighting
+- For documents/screenshots: extract and explain the text content
+- Even if you only see an image filename mentioned: the image IS being sent, analyze it!
+
+========================
+MEDICAL/DISEASE IMAGE ANALYSIS (MANDATORY STRUCTURE)
+========================
+When analyzing medical, disease, injury, or health-related images:
+
+**ALWAYS follow this structured format:**
+
+1. **🔍 DIAGNOSIS/CONDITION IDENTIFIED**
+   - Clear identification of the disease, injury, or condition
+   - Medical name (if applicable)
+
+2. **⚠️ KEY SYMPTOMS/SIGNS VISIBLE**
+   - List visual indicators present in the image
+   - Use bullet points with ✓ for visible symptoms
+   - Bold the most prominent indicators
+
+3. **🔬 CAUSES & PATHOPHYSIOLOGY**
+   - Why this condition looks like this
+   - What causes these visual manifestations
+   - Biological/medical explanation
+
+4. **💥 SEVERITY & COMPLICATIONS**
+   - Stage or severity level (if visible)
+   - Potential complications if untreated
+   - Risk assessment
+
+5. **💊 TREATMENT/MANAGEMENT**
+   - General treatment approaches
+   - Prevention methods
+   - When to seek medical attention
+
+6. **📌 IMPORTANT POINTS**
+   - Highlight 3-5 most critical findings in **bold**
+   - Use emoji indicators (⚠️ 🔴 ✓ 📍) to emphasize importance
+
+**FORMATTING RULES:**
+- Use **bold** for important findings
+- Use 🔴 for severe/critical findings
+- Use ✓ for identified symptoms
+- Use ⚠️ for warnings/precautions
+- Use bullet points (•) for lists
+- Use clear heading structure with emojis
+
+========================
 FILE PROCESSING & GENERATION (STRICT)
 ========================
 When the user provides a file or text and asks to "beautify", "format", "convert to ATS resume", "write a letter", or "refactor code":
 1. **TRANSFORM**: Completely rewrite the content in the requested format (e.g., clean ATS structure for resumes, standard business format for letters). Do NOT just copy the input.
 2. **ISOLATE**: Wrap the *final processed content* in a Markdown code block (```). Do NOT put conversational text inside this block.
-3. **LINK**: Provide a download link: `Download Processed File`.
+3. **NO LINKS**: Do NOT provide any download links or file URLs in the response. Files are auto-downloaded automatically.
 
 - Do NOT generate fake download links (e.g., file.io, example.com).
 """
@@ -495,222 +654,254 @@ When the user provides a file or text and asks to "beautify", "format", "convert
 
     last_user = messages[-1]['content'].lower()
 
-    # --- Realtime data injection ---
+    # --- SMART ROUTING: Determine request type ---
+    # Check if request has audio/file/image to skip unnecessary SERP calls
+    has_audio = any(keyword in content for keyword in [".mp3", ".wav", ".m4a", ".flac", "audio", "transcribe"])
+    has_file = any(keyword in content for keyword in [".pdf", ".docx", ".txt", ".xlsx", "file:", "document"])
+    has_image = bool(image_urls_in_message)  # Image URLs already extracted above
+    
+    is_text_only = not (has_audio or has_file or has_image)
+    
+    print(f"\n{'='*100}")
+    print(f"📊 REQUEST ROUTING ANALYSIS")
+    print(f"{'='*100}")
+    print(f"📝 User Query: {messages[-1]['content'][:100]}")
+    print(f"🔍 Request Type: text_only={is_text_only}, has_audio={has_audio}, has_file={has_file}, has_image={has_image}")
+    
+    if has_audio:
+        print(f"   ✅ AUDIO DETECTED → Using Whisper API for transcription")
+    if has_file:
+        print(f"   ✅ FILE DETECTED → Using file extraction service")
+    if has_image:
+        print(f"   ✅ IMAGE DETECTED → Using Vision API + OCR")
+
+    # --- Realtime data injection (ONLY for text-only queries) ---
     realtime_info = []
 
-    try:
-        now = datetime.now(timezone.utc).astimezone()
-        time_str = now.strftime('%d %b %Y %I:%M %p')
-        
-        # Extract location if mentioned
-        location_match = re.search(r"in\s+([a-zA-Z\s]+)", last_user)
-        location = location_match.group(1).strip() if location_match else "India"
-        
-        # ==================== WEATHER ====================
-        if any(keyword in last_user for keyword in ["weather", "climate", "temperature", "wind", "humidity", "forecast"]):
-            city = location if location_match else None
-            if city:
-                w = weather(city=city)
-                if w.get("temp_c") is not None:
+    # CRITICAL: Only fetch SERP data if this is a TEXT-ONLY request
+    # If user uploaded audio/file/image, skip SERP to save credits
+    if is_text_only:
+        print(f"\n⏳ TEXT-ONLY REQUEST: Checking for REALTIME INFO keywords...")
+        try:
+            now = datetime.now(timezone.utc).astimezone()
+            time_str = now.strftime('%d %b %Y %I:%M %p')
+            
+            # Extract location if mentioned
+            location_match = re.search(r"in\s+([a-zA-Z\s]+)", last_user)
+            location = location_match.group(1).strip() if location_match else "India"
+            
+            # ==================== WEATHER ====================
+            if any(keyword in last_user for keyword in ["weather", "climate", "temperature", "wind", "humidity", "forecast"]):
+                print(f"   🌐 SERP: Weather keyword detected → Fetching realtime weather data")
+                city = location if location_match else None
+                if city:
+                    w = weather(city=city)
+                    if w.get("temp_c") is not None:
+                        realtime_info.append(
+                            f"🌡️ Weather Update ({time_str}): "
+                            f"{w['city']} | {w['temp_c']}°C | {w['description']} | "
+                            f"Humidity {w.get('humidity')}% | Wind {w.get('wind_m_s')} m/s"
+                        )
+                    elif w.get("summary"):
+                        realtime_info.append(
+                            f"🌡️ Weather Update ({time_str}): {w['summary']}"
+                        )
+            
+            # ==================== NEWS ====================
+            if any(keyword in last_user for keyword in ["news", "headlines", "latest", "breaking", "updates"]):
+                print(f"   🌐 SERP: News keyword detected → Fetching latest news")
+                q = re.sub(r"(show|give|latest|what|is|are|tell|me|news|headlines)", "", last_user).strip()
+                n = news(q=q if q else "", category="")
+                headlines = [it.get("title") for it in n.get("results", [])[:3] if it.get("title")]
+                if headlines:
                     realtime_info.append(
-                        f"🌡️ Weather Update ({time_str}): "
-                        f"{w['city']} | {w['temp_c']}°C | {w['description']} | "
-                        f"Humidity {w.get('humidity')}% | Wind {w.get('wind_m_s')} m/s"
+                        f"📰 Latest News ({time_str}): " + " | ".join(headlines)
                     )
-                elif w.get("summary"):
+            
+            # ==================== SPORTS ====================
+            if any(keyword in last_user for keyword in ["sports", "cricket", "football", "soccer", "basketball", "match", "score", "tournament"]):
+                print(f"   🌐 SERP: Sports keyword detected → Fetching sports updates")
+                q = re.sub(r"(show|give|latest|what|is|are|tell|me|sports)", "", last_user).strip()
+                s = news(q=q if q else "sports", category="sports")
+                sports_news = [it.get("title") for it in s.get("results", [])[:3] if it.get("title")]
+                if sports_news:
                     realtime_info.append(
-                        f"🌡️ Weather Update ({time_str}): {w['summary']}"
+                        f"⚽ Sports Update ({time_str}): " + " | ".join(sports_news)
                     )
-        
-        # ==================== NEWS ====================
-        if any(keyword in last_user for keyword in ["news", "headlines", "latest", "breaking", "updates"]):
-            q = re.sub(r"(show|give|latest|what|is|are|tell|me|news|headlines)", "", last_user).strip()
-            n = news(q=q if q else "", category="")
-            headlines = [it.get("title") for it in n.get("results", [])[:3] if it.get("title")]
-            if headlines:
-                realtime_info.append(
-                    f"📰 Latest News ({time_str}): " + " | ".join(headlines)
-                )
-        
-        # ==================== SPORTS ====================
-        if any(keyword in last_user for keyword in ["sports", "cricket", "football", "soccer", "basketball", "match", "score", "tournament"]):
-            q = re.sub(r"(show|give|latest|what|is|are|tell|me|sports)", "", last_user).strip()
-            s = news(q=q if q else "sports", category="sports")
-            sports_news = [it.get("title") for it in s.get("results", [])[:3] if it.get("title")]
-            if sports_news:
-                realtime_info.append(
-                    f"⚽ Sports Update ({time_str}): " + " | ".join(sports_news)
-                )
-        
-        # ==================== STOCKS ====================
-        if any(keyword in last_user for keyword in ["stock", "share", "market", "sensex", "nifty", "nasdaq", "dow jones"]):
-            q = re.sub(r"(show|give|latest|what|is|are|tell|me)", "", last_user).strip()
-            stock_query = q if q else "stock market today"
-            st = serp_search_raw(stock_query, num=5)
-            stock_data = None
-            if "answer_box" in st:
-                stock_data = st["answer_box"].get("answer") or st["answer_box"].get("snippet")
-            elif st.get("organic_results"):
-                stock_data = st["organic_results"][0].get("snippet")
-            if stock_data:
-                realtime_info.append(
-                    f"📈 Stock Market ({time_str}): {stock_data}"
-                )
-        
-        # ==================== CRYPTO / BITCOIN ====================
-        if any(keyword in last_user for keyword in ["crypto", "bitcoin", "ethereum", "btc", "eth", "blockchain", "nft"]):
-            q = re.sub(r"(show|give|latest|what|is|are|tell|me)", "", last_user).strip()
-            crypto_query = q if q else "bitcoin price today"
-            cr = serp_search_raw(crypto_query, num=5)
-            crypto_data = None
-            if "answer_box" in cr:
-                crypto_data = cr["answer_box"].get("answer") or cr["answer_box"].get("snippet")
-            elif cr.get("organic_results"):
-                crypto_data = cr["organic_results"][0].get("snippet")
-            if crypto_data:
-                realtime_info.append(
-                    f"₿ Cryptocurrency ({time_str}): {crypto_data}"
-                )
-        
-        # ==================== FUEL / PETROL ====================
-        if any(keyword in last_user for keyword in ["petrol", "fuel", "diesel", "gas", "price", "lpg"]):
-            fp = fuel_petrol(state=location, city="")
-            if fp.get("answer"):
-                realtime_info.append(
-                    f"⛽ Fuel Price ({time_str}) for {fp.get('location')}: {fp.get('answer')}"
-                )
-        
-        # ==================== SOILS / AGRICULTURE ====================
-        if any(keyword in last_user for keyword in ["soil", "agriculture", "farming", "crop", "harvest", "fertilizer"]):
-            q = re.sub(r"(show|give|latest|what|is|are|tell|me)", "", last_user).strip()
-            soil_query = q if q else f"soil conditions in {location}"
-            sol = serp_search_raw(soil_query, num=5)
-            soil_data = None
-            if "answer_box" in sol:
-                soil_data = sol["answer_box"].get("answer") or sol["answer_box"].get("snippet")
-            elif sol.get("organic_results"):
-                soil_data = sol["organic_results"][0].get("snippet")
-            if soil_data:
-                realtime_info.append(
-                    f"🌾 Agriculture/Soil Info ({time_str}): {soil_data}"
-                )
-        
-        # ==================== MINERALS / COALS ====================
-        if any(keyword in last_user for keyword in ["coal", "mineral", "mining", "ore", "iron", "copper", "gold"]):
-            q = re.sub(r"(show|give|latest|what|is|are|tell|me)", "", last_user).strip()
-            mineral_query = q if q else "coal prices today"
-            mn = serp_search_raw(mineral_query, num=5)
-            mineral_data = None
-            if "answer_box" in mn:
-                mineral_data = mn["answer_box"].get("answer") or mn["answer_box"].get("snippet")
-            elif mn.get("organic_results"):
-                mineral_data = mn["organic_results"][0].get("snippet")
-            if mineral_data:
-                realtime_info.append(
-                    f"⛏️ Minerals/Coal Info ({time_str}): {mineral_data}"
-                )
-        
-        # ==================== ENVIRONMENT / AIR QUALITY ====================
-        if any(keyword in last_user for keyword in ["air quality", "pollution", "aqi", "pm2.5", "environment", "ozone"]):
-            q = re.sub(r"(show|give|latest|what|is|are|tell|me)", "", last_user).strip()
-            env_query = q if q else f"air quality in {location}"
-            env = serp_search_raw(env_query, num=5)
-            env_data = None
-            if "answer_box" in env:
-                env_data = env["answer_box"].get("answer") or env["answer_box"].get("snippet")
-            elif env.get("organic_results"):
-                env_data = env["organic_results"][0].get("snippet")
-            if env_data:
-                realtime_info.append(
-                    f"🌍 Environment/Air Quality ({time_str}): {env_data}"
-                )
-        
-        # ==================== HEALTH / DISEASES ====================
-        if any(keyword in last_user for keyword in ["health", "disease", "virus", "covid", "medicine", "treatment", "hospital"]):
-            q = re.sub(r"(show|give|latest|what|is|are|tell|me)", "", last_user).strip()
-            health_query = q if q else "health news today"
-            hlt = serp_search_raw(health_query, num=5)
-            health_data = [it.get("title") for it in hlt.get("results", [])[:3] if it.get("title")]
-            if not health_data and "answer_box" in hlt:
-                health_data = [hlt["answer_box"].get("answer") or hlt["answer_box"].get("snippet")]
-            if health_data:
-                realtime_info.append(
-                    f"🏥 Health Info ({time_str}): " + " | ".join(str(h) for h in health_data[:3])
-                )
-        
-        # ==================== EVENTS / CONFERENCES ====================
-        if any(keyword in last_user for keyword in ["event", "conference", "concert", "festival", "tournament", "meeting"]):
-            q = re.sub(r"(show|give|latest|what|is|are|tell|me)", "", last_user).strip()
-            event_query = q if q else f"events in {location}"
-            evt = serp_search_raw(event_query, num=5)
-            event_data = [it.get("title") for it in evt.get("results", [])[:3] if it.get("title")]
-            if event_data:
-                realtime_info.append(
-                    f"🎉 Events ({time_str}): " + " | ".join(event_data)
-                )
-        
-        # ==================== TRAVEL / TRAFFIC ====================
-        if any(keyword in last_user for keyword in ["traffic", "flight", "travel", "route", "transport", "commute"]):
-            q = re.sub(r"(show|give|latest|what|is|are|tell|me)", "", last_user).strip()
-            travel_query = q if q else f"traffic in {location}"
-            trv = serp_search_raw(travel_query, num=5)
-            travel_data = None
-            if "answer_box" in trv:
-                travel_data = trv["answer_box"].get("answer") or trv["answer_box"].get("snippet")
-            elif trv.get("organic_results"):
-                travel_data = trv["organic_results"][0].get("snippet")
-            if travel_data:
-                realtime_info.append(
-                    f"✈️ Travel/Traffic Info ({time_str}): {travel_data}"
-                )
-        
-        # ==================== WEATHER CONDITIONS (EXTREME) ====================
-        if any(keyword in last_user for keyword in ["rain", "flood", "storm", "cyclone", "hurricane", "tsunami", "earthquake"]):
-            q = re.sub(r"(show|give|latest|what|is|are|tell|me)", "", last_user).strip()
-            condition_query = q if q else f"weather conditions in {location}"
-            cond = serp_search_raw(condition_query, num=5)
-            condition_data = None
-            if "answer_box" in cond:
-                condition_data = cond["answer_box"].get("answer") or cond["answer_box"].get("snippet")
-            elif cond.get("organic_results"):
-                condition_data = cond["organic_results"][0].get("snippet")
-            if condition_data:
-                realtime_info.append(
-                    f"⚠️ Extreme Weather Conditions ({time_str}): {condition_data}"
-                )
-        
-        # ==================== EDUCATION / ADMISSIONS ====================
-        if any(keyword in last_user for keyword in ["education", "admission", "exam", "neet", "jee", "board", "result"]):
-            q = re.sub(r"(show|give|latest|what|is|are|tell|me)", "", last_user).strip()
-            edu_query = q if q else "education news today"
-            edu = serp_search_raw(edu_query, num=5)
-            edu_data = [it.get("title") for it in edu.get("results", [])[:3] if it.get("title")]
-            if edu_data:
-                realtime_info.append(
-                    f"🎓 Education News ({time_str}): " + " | ".join(edu_data)
-                )
-        
-        # ==================== GENERAL SEARCH (FALLBACK) ====================
-        if not realtime_info and last_user.strip():
-            # Try to get any relevant data from a general search
-            gen = serp_search_raw(last_user, num=3)
-            gen_results = [it.get("title") for it in gen.get("results", [])[:2] if it.get("title")]
-            if gen_results:
-                realtime_info.append(
-                    f"🔍 Search Results ({time_str}): " + " | ".join(gen_results)
-                )
-            # Also check answer box
-            if "answer_box" in gen:
-                ans = gen["answer_box"].get("answer") or gen["answer_box"].get("snippet")
-                if ans:
+            
+            # ==================== STOCKS ====================
+            if any(keyword in last_user for keyword in ["stock", "share", "market", "sensex", "nifty", "nasdaq", "dow jones"]):
+                print(f"   🌐 SERP: Stock market keyword detected → Fetching live stock data")
+                q = re.sub(r"(show|give|latest|what|is|are|tell|me)", "", last_user).strip()
+                stock_query = q if q else "stock market today"
+                st = serp_search_raw(stock_query, num=5)
+                stock_data = None
+                if "answer_box" in st:
+                    stock_data = st["answer_box"].get("answer") or st["answer_box"].get("snippet")
+                elif st.get("organic_results"):
+                    stock_data = st["organic_results"][0].get("snippet")
+                if stock_data:
                     realtime_info.append(
-                        f"📌 Answer ({time_str}): {ans}"
+                        f"📈 Stock Market ({time_str}): {stock_data}"
                     )
-    except Exception as e:
-        print("Realtime fetch error:", e)
+            
+            # ==================== CRYPTO / BITCOIN ====================
+            if any(keyword in last_user for keyword in ["crypto", "bitcoin", "ethereum", "btc", "eth", "blockchain", "nft"]):
+                print(f"   🌐 SERP: Crypto keyword detected → Fetching live crypto prices")
+                q = re.sub(r"(show|give|latest|what|is|are|tell|me)", "", last_user).strip()
+                crypto_query = q if q else "bitcoin price today"
+                cr = serp_search_raw(crypto_query, num=5)
+                crypto_data = None
+                if "answer_box" in cr:
+                    crypto_data = cr["answer_box"].get("answer") or cr["answer_box"].get("snippet")
+                elif cr.get("organic_results"):
+                    crypto_data = cr["organic_results"][0].get("snippet")
+                if crypto_data:
+                    realtime_info.append(
+                        f"₿ Cryptocurrency ({time_str}): {crypto_data}"
+                    )
+            
+            # ==================== FUEL / PETROL ====================
+            if any(keyword in last_user for keyword in ["petrol", "fuel", "diesel", "gas", "price", "lpg"]):
+                fp = fuel_petrol(state=location, city="")
+                if fp.get("answer"):
+                    realtime_info.append(
+                        f"⛽ Fuel Price ({time_str}) for {fp.get('location')}: {fp.get('answer')}"
+                    )
+            
+            # ==================== SOILS / AGRICULTURE ====================
+            if any(keyword in last_user for keyword in ["soil", "agriculture", "farming", "crop", "harvest", "fertilizer"]):
+                q = re.sub(r"(show|give|latest|what|is|are|tell|me)", "", last_user).strip()
+                soil_query = q if q else f"soil conditions in {location}"
+                sol = serp_search_raw(soil_query, num=5)
+                soil_data = None
+                if "answer_box" in sol:
+                    soil_data = sol["answer_box"].get("answer") or sol["answer_box"].get("snippet")
+                elif sol.get("organic_results"):
+                    soil_data = sol["organic_results"][0].get("snippet")
+                if soil_data:
+                    realtime_info.append(
+                        f"🌾 Agriculture/Soil Info ({time_str}): {soil_data}"
+                    )
+            
+            # ==================== MINERALS / COALS ====================
+            if any(keyword in last_user for keyword in ["coal", "mineral", "mining", "ore", "iron", "copper", "gold"]):
+                q = re.sub(r"(show|give|latest|what|is|are|tell|me)", "", last_user).strip()
+                mineral_query = q if q else "coal prices today"
+                mn = serp_search_raw(mineral_query, num=5)
+                mineral_data = None
+                if "answer_box" in mn:
+                    mineral_data = mn["answer_box"].get("answer") or mn["answer_box"].get("snippet")
+                elif mn.get("organic_results"):
+                    mineral_data = mn["organic_results"][0].get("snippet")
+                if mineral_data:
+                    realtime_info.append(
+                        f"⛏️ Minerals/Coal Info ({time_str}): {mineral_data}"
+                    )
+            
+            # ==================== ENVIRONMENT / AIR QUALITY ====================
+            if any(keyword in last_user for keyword in ["air quality", "pollution", "aqi", "pm2.5", "environment", "ozone"]):
+                q = re.sub(r"(show|give|latest|what|is|are|tell|me)", "", last_user).strip()
+                env_query = q if q else f"air quality in {location}"
+                env = serp_search_raw(env_query, num=5)
+                env_data = None
+                if "answer_box" in env:
+                    env_data = env["answer_box"].get("answer") or env["answer_box"].get("snippet")
+                elif env.get("organic_results"):
+                    env_data = env["organic_results"][0].get("snippet")
+                if env_data:
+                    realtime_info.append(
+                        f"🌍 Environment/Air Quality ({time_str}): {env_data}"
+                    )
+            
+            # ==================== HEALTH / DISEASES ====================
+            if any(keyword in last_user for keyword in ["health", "disease", "virus", "covid", "medicine", "treatment", "hospital"]):
+                q = re.sub(r"(show|give|latest|what|is|are|tell|me)", "", last_user).strip()
+                health_query = q if q else "health news today"
+                hlt = serp_search_raw(health_query, num=5)
+                health_data = [it.get("title") for it in hlt.get("results", [])[:3] if it.get("title")]
+                if not health_data and "answer_box" in hlt:
+                    health_data = [hlt["answer_box"].get("answer") or hlt["answer_box"].get("snippet")]
+                if health_data:
+                    realtime_info.append(
+                        f"🏥 Health Info ({time_str}): " + " | ".join(str(h) for h in health_data[:3])
+                    )
+            
+            # ==================== EVENTS / CONFERENCES ====================
+            if any(keyword in last_user for keyword in ["event", "conference", "concert", "festival", "tournament", "meeting"]):
+                q = re.sub(r"(show|give|latest|what|is|are|tell|me)", "", last_user).strip()
+                event_query = q if q else f"events in {location}"
+                evt = serp_search_raw(event_query, num=5)
+                event_data = [it.get("title") for it in evt.get("results", [])[:3] if it.get("title")]
+                if event_data:
+                    realtime_info.append(
+                        f"🎉 Events ({time_str}): " + " | ".join(event_data)
+                    )
+            
+            # ==================== TRAVEL / TRAFFIC ====================
+            if any(keyword in last_user for keyword in ["traffic", "flight", "travel", "route", "transport", "commute"]):
+                q = re.sub(r"(show|give|latest|what|is|are|tell|me)", "", last_user).strip()
+                travel_query = q if q else f"traffic in {location}"
+                trv = serp_search_raw(travel_query, num=5)
+                travel_data = None
+                if "answer_box" in trv:
+                    travel_data = trv["answer_box"].get("answer") or trv["answer_box"].get("snippet")
+                elif trv.get("organic_results"):
+                    travel_data = trv["organic_results"][0].get("snippet")
+                if travel_data:
+                    realtime_info.append(
+                        f"✈️ Travel/Traffic Info ({time_str}): {travel_data}"
+                    )
+            
+            # ==================== WEATHER CONDITIONS (EXTREME) ====================
+            if any(keyword in last_user for keyword in ["rain", "flood", "storm", "cyclone", "hurricane", "tsunami", "earthquake"]):
+                q = re.sub(r"(show|give|latest|what|is|are|tell|me)", "", last_user).strip()
+                condition_query = q if q else f"weather conditions in {location}"
+                cond = serp_search_raw(condition_query, num=5)
+                condition_data = None
+                if "answer_box" in cond:
+                    condition_data = cond["answer_box"].get("answer") or cond["answer_box"].get("snippet")
+                elif cond.get("organic_results"):
+                    condition_data = cond["organic_results"][0].get("snippet")
+                if condition_data:
+                    realtime_info.append(
+                        f"⚠️ Extreme Weather Conditions ({time_str}): {condition_data}"
+                    )
+            
+            # ==================== EDUCATION / ADMISSIONS ====================
+            if any(keyword in last_user for keyword in ["education", "admission", "exam", "neet", "jee", "board", "result"]):
+                q = re.sub(r"(show|give|latest|what|is|are|tell|me)", "", last_user).strip()
+                edu_query = q if q else "education news today"
+                edu = serp_search_raw(edu_query, num=5)
+                edu_data = [it.get("title") for it in edu.get("results", [])[:3] if it.get("title")]
+                if edu_data:
+                    realtime_info.append(
+                        f"🎓 Education News ({time_str}): " + " | ".join(edu_data)
+                    )
+            
+            # NOTE: No GENERAL SEARCH FALLBACK - Only call SERP for specific realtime keywords
+            # This saves credits! Regular questions go to OpenAI instead
+        except Exception as e:
+            print("Realtime fetch error:", e)
+    else:
+        print("⏭️  TEXT-ONLY BUT NOT REALTIME: Skipping SERP - Request has audio/file/image. Saving credits!")
 
+    # --- Log API routing decision ---
     if realtime_info:
+        print(f"\n{'='*100}")
+        print(f"🌐 API ROUTING DECISION: SERP + OpenAI (HYBRID MODE)")
+        print(f"{'='*100}")
+        print(f"✅ Using SERP API: YES (Found {len(realtime_info)} realtime data points)")
+        print(f"✅ Using OpenAI GPT: YES (for analysis & response generation)")
+        print(f"   Realtime Data Sources: {', '.join([info.split('(')[0].strip() for info in realtime_info][:3])}")
         system_prompt = system_prompt + "\n\n════════════════════════════\n⏱ REALTIME DATA MODE (STRICT)\n════════════════════════════\nThe following information is LIVE and fetched from external APIs (Google / OpenWeather).\n\nRULES:\n✔ You MUST use the realtime data provided\n✔ NEVER say \"I don't have real-time data\"\n✔ NEVER redirect users to external websites\n✔ NEVER say data is unavailable if present\n✔ ALWAYS include date & time in responses\n✔ Present data confidently as current\n\nIf realtime data exists, treat it as authoritative truth.\n════════════════════════════\n\nRealtime data:\n" + "\n".join(realtime_info)
+    else:
+        print(f"\n{'='*100}")
+        print(f"🤖 API ROUTING DECISION: OpenAI ONLY (KNOWLEDGE BASE MODE)")
+        print(f"{'='*100}")
+        print(f"✅ Using SERP API: NO (No realtime keywords detected)")
+        print(f"✅ Using OpenAI GPT: YES (Knowledge base + your training data)")
+        print(f"💰 CREDIT SAVING: SERP credits NOT used!")
     
     # --- Add current date & time ---
     now_ist = datetime.now(timezone.utc).astimezone()
@@ -959,20 +1150,91 @@ IMAGE RESPONSE RULES - CRITICAL (PURE IMAGE REQUEST)
     # STEP 5: Add guard to block model from overriding realtime
     system_prompt += """\n\nIMPORTANT:\nIf realtime data is present, DO NOT add disclaimers.\nDO NOT mention limitations.\nDO NOT mention training data.\nDO NOT suggest checking other websites."""
 
-    # Safe system prompt injection
+    # ==================== DETECT CONTINUATION REQUESTS ====================
+    # A continuation happens when we have only 2 messages: user + assistant (no full history)
+    # This indicates the frontend is asking to continue from where the previous response was cut off
+    is_continuation_request = False
+    user_messages_count = sum(1 for m in final_messages if isinstance(m, dict) and m.get('role') == 'user')
+    assistant_messages_count = sum(1 for m in final_messages if isinstance(m, dict) and m.get('role') == 'assistant')
+    
+    if user_messages_count == 1 and assistant_messages_count >= 1:
+        # Check if the assistant message already has content (incomplete response)
+        last_assistant = next((m for m in reversed(final_messages) if isinstance(m, dict) and m.get('role') == 'assistant'), None)
+        if last_assistant and last_assistant.get('content'):
+            is_continuation_request = True
+            print(f"🔄 CONTINUATION DETECTED: Will append to existing response without preamble")
+            system_prompt += """\n\n═══════════════════════════════════════════\n⚠️ CONTINUATION MODE: CRITICAL INSTRUCTIONS\n═══════════════════════════════════════════\nYou are CONTINUING a response that was interrupted.\n\n✅ MUST DO:\n1. Continue IMMEDIATELY with the next content\n2. NO preambles, greetings, or "Certainly" messages\n3. NO explanations like "Here's the continuation"\n4. NO section headers or reintroduction\n5. Write naturally from where the previous response ended\n\n❌ NEVER DO:\n- Do not start with "Certainly", "Sure", "Here's", "Let me continue"\n- Do not repeat what was already written\n- Do not add introductory text\n- Do not summarize the previous part\n\n✨ Just continue writing the next sentence/paragraph/code exactly as if you never stopped."""
+
+    # Safe system prompt injection - add to both messages and final_messages
     if messages and messages[0].get('role') == 'system':
         messages[0]['content'] = system_prompt
     else:
         messages.insert(0, {'role': 'system', 'content': system_prompt})
+    
+    # Also update final_messages with system prompt
+    if final_messages and final_messages[0].get('role') == 'system':
+        final_messages[0]['content'] = system_prompt
+    else:
+        final_messages.insert(0, {'role': 'system', 'content': system_prompt})
+
+    # ==================== IMAGE BEAUTIFICATION LOGIC ====================
+    # Generate beautified version using DALL-E based on analysis
+    beautified_image_url = None
+    beautification_keywords = ["beautify", "enhance", "improve", "edit", "retouch", "upscale", "refine", "polish", "sharpen", "clarity", "quality"]
+    is_beautification_request = False
+    
+    try:
+        if image_urls_in_message and any(keyword in clean_content.lower() for keyword in beautification_keywords):
+            is_beautification_request = True
+            print(f"📸 Image beautification requested - will generate enhanced version")
+            # Modify the prompt to ask for improvement suggestions
+            if final_messages and len(final_messages) > 0:
+                last_msg = final_messages[-1]
+                if isinstance(last_msg, dict) and last_msg.get('role') == 'user':
+                    if isinstance(last_msg.get('content'), list):
+                        # Update the text content in the vision message
+                        updated = False
+                        for item in last_msg['content']:
+                            if isinstance(item, dict) and item.get('type') == 'text':
+                                item['text'] = f"""Please analyze this image in detail for beautification/enhancement purposes. Provide:
+1. Current image quality assessment (clarity, colors, lighting, composition)
+2. Specific improvements that could be made
+3. Suggestions for enhancement (contrast, saturation, sharpness, etc.)
+4. Overall beautification recommendations
+
+Be specific and practical in your suggestions."""
+                                updated = True
+                                print(f"✅ Beautification prompt updated for Vision API analysis")
+                                break
+                        if not updated:
+                            print(f"⚠️ Could not find text item in message content")
+    except Exception as e:
+        print(f"⚠️ Error during beautification prompt setup: {type(e).__name__} - {str(e)}")
+        # Continue with normal processing if prompt setup fails
 
     # AI streaming response
-    response = openai_client.chat.completions.create(
-        model=payload.model or "gpt-4o-mini",
-        messages=messages,
-        temperature=0.7,
-        max_tokens=1000,
-        stream=True
-    )
+    # Dynamically adjust max_tokens based on content size
+    estimated_tokens = count_tokens_estimate("".join([m.get('content', '') for m in messages if isinstance(m, dict)]))
+    
+    # For large code, use more tokens for response
+    if is_large_code or estimated_tokens > 4000:
+        max_tokens_response = 3000  # Increased for large code analysis
+        print(f"🔧 Large code detected ({estimated_tokens} tokens estimated) - Using {max_tokens_response} max tokens")
+    else:
+        max_tokens_response = 2000  # Increased from 1000 for better responses
+    
+    try:
+        response = openai_client.chat.completions.create(
+            model=getattr(payload, "model", None) or "gpt-4o-mini",
+            messages=final_messages,
+            temperature=0.7,
+            max_tokens=max_tokens_response,
+            stream=True,
+            timeout=120  # 2 minutes timeout for large requests
+        )
+    except Exception as e:
+        print(f"❌ OpenAI API Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"AI service error: {str(e)}")
 
     def generate():
         # Send images immediately if available for PURE image requests (typed event)
@@ -990,6 +1252,40 @@ IMAGE RESPONSE RULES - CRITICAL (PURE IMAGE REQUEST)
                     yield f"data: {json.dumps({'type': 'chunk', 'data': content})}\n\n"
                 if chunk.choices[0].finish_reason:
                     finish_reason = chunk.choices[0].finish_reason
+
+        # ==================== GENERATE BEAUTIFIED IMAGE ====================
+        beautified_image_url = None
+        if is_beautification_request and image_urls_in_message:
+            try:
+                print(f"🎨 Generating beautified image version...")
+                # Extract the enhancement suggestions from the response
+                enhancement_prompt = f"""Based on this image analysis and improvement suggestions:
+{full_reply}
+
+Please generate a high-quality, professionally enhanced version of the image with:
+- Improved clarity and sharpness
+- Enhanced colors and contrast
+- Better lighting and composition
+- Professional polish and refinement
+
+Create a beautiful, polished version that addresses the suggested improvements."""
+
+                # Generate beautified image using DALL-E
+                beautified_response = openai_client.images.generate(
+                    model="dall-e-3",
+                    prompt=enhancement_prompt,
+                    size="1024x1024",
+                    quality="hd",
+                    n=1,
+                )
+                beautified_image_url = beautified_response.data[0].url
+                print(f"✅ Beautified image generated: {beautified_image_url}")
+                
+                # Send beautified image to frontend
+                yield f"data: {json.dumps({'type': 'beautified_image', 'data': beautified_image_url})}\n\n"
+            except Exception as e:
+                print(f"⚠️ Error generating beautified image: {str(e)}")
+                # Continue without beautified image if generation fails
 
         # For explanation requests, use SerpAPI AI Mode ONLY
         explanation_images = []
@@ -1010,7 +1306,7 @@ IMAGE RESPONSE RULES - CRITICAL (PURE IMAGE REQUEST)
 
         # Save chat to DB
         last_user_msg = next((m['content'] for m in reversed(messages) if m['role'] == 'user'), '')
-        final_images = explanation_images if fetch_images_from_response else image_urls
+        final_images = [beautified_image_url] if beautified_image_url else (explanation_images if fetch_images_from_response else image_urls)
         result = chats_collection.insert_one({
             "session_id": session_id,
             "email": email,
@@ -1114,9 +1410,19 @@ def delete_chat_session(session_id: str, email: str):
 async def upload_file(file: UploadFile = File(...), email: str | None = Form(None)):
     ext = file.filename.split(".")[-1].lower()
     
+    # Check file size before processing
+    file_size = 0
+    file_content = await file.read()
+    file_size = len(file_content)
+    
+    if file_size > 10000000:  # 10MB limit
+        raise HTTPException(status_code=413, detail=f"File too large. Max 10MB. Got {file_size / (1024*1024):.1f} MB")
+    
+    print(f"📁 File upload: {file.filename} ({file_size / 1024:.1f} KB)")
+    
     # Use a temporary file instead of a persistent uploads folder
     with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
-        shutil.copyfileobj(file.file, tmp)
+        tmp.write(file_content)
         tmp_path = tmp.name
 
     try:
@@ -1163,7 +1469,23 @@ async def upload_file(file: UploadFile = File(...), email: str | None = Form(Non
         "uploaded_at": datetime.utcnow()
     })
 
-    return {"file_id": s3_key, "original_name": file.filename, "text": extracted_text, "s3_key": s3_key}
+    # For images, return a presigned URL so OpenAI Vision API can access it
+    presigned_url = None
+    if ext in ALLOWED_IMAGE_FORMATS:
+        try:
+            # Generate a presigned URL valid for 24 hours (86400 seconds)
+            presigned_url = s3.generate_presigned_url(
+                'get_object',
+                Params={'Bucket': AWS_BUCKET, 'Key': s3_key},
+                ExpiresIn=86400  # 24 hours
+            )
+            print(f"✅ Presigned URL generated for image: {presigned_url}")
+        except Exception as e:
+            print(f"❌ Error generating presigned URL: {e}")
+            # Fallback to regular S3 URL
+            presigned_url = f"https://{AWS_BUCKET}.s3.{AWS_REGION}.amazonaws.com/{s3_key}"
+
+    return {"file_id": s3_key, "original_name": file.filename, "text": extracted_text, "s3_key": s3_key, "image_url": presigned_url if ext in ALLOWED_IMAGE_FORMATS else None}
 
 # --------------------------------------------------
 # File download

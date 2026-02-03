@@ -22,3 +22,6 @@ pre, code {
   word-break: break-word;
 }
 
+.bg-white{
+  background: white !important;
+}

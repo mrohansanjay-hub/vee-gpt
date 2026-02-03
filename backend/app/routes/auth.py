@@ -29,7 +29,7 @@ oauth.register(
 # 🔐 LOGIN
 @router.get("/google/login")
 async def google_login(request: Request):
-    redirect_uri = "http://127.0.0.1:8000/auth/google/callback"
+    redirect_uri = "http://www.vee-gpt.com/backend/auth/google/callback"
     return await oauth.google.authorize_redirect(request, redirect_uri)
 
 # 🔁 CALLBACK
@@ -42,5 +42,5 @@ async def google_callback(request: Request):
 
     # 🔁 Redirect back to React with email
     return RedirectResponse(
-        url=f"http://localhost:5173/?email={email}"
+        url=f"http://www.vee-gpt.com/?email={email}"
     )

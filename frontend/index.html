@@ -2,12 +2,26 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <meta http-equiv="cache-control" content="no-cache, no-store, must-revalidate, max-age=0" />
+    <meta http-equiv="pragma" content="no-cache" />
+    <meta http-equiv="expires" content="-1" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
     <link rel="icon" type="image/svg+xml" href="/Beige and Blue Floral Wedding Logo.jpg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>frontend</title>
+    <meta name="description" content="AI Chat Application" />
+    <title>Vee-GPT</title>
   </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
+    <script>
+      // Cache busting - force reload periodically
+      setInterval(() => {
+        if (Math.random() > 0.95) {
+          console.log('Periodic cache refresh');
+          window.location.reload();
+        }
+      }, 120000);
+    </script>
   </body>
 </html>

@@ -225,3 +225,31 @@ const saveBlob = (blob, filename) => {
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 };
+export async function forceDownload(url, filename = "file.pdf") {
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      credentials: "include", // keep if auth/cookies are used
+    });
+
+    if (!response.ok) {
+      throw new Error("Failed to download file");
+    }
+
+    const blob = await response.blob();
+    const blobUrl = window.URL.createObjectURL(blob);
+
+    const a = document.createElement("a");
+    a.href = blobUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+
+    // cleanup
+    a.remove();
+    window.URL.revokeObjectURL(blobUrl);
+  } catch (err) {
+    console.error("❌ Force download failed:", err);
+    alert("Failed to download file");
+  }
+}

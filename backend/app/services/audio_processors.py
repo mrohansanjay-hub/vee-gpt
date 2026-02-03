@@ -33,9 +33,13 @@ ALLOWED_AUDIO_FORMATS = ["mp3", "wav", "m4a", "ogg", "webm"]
 # --------------------------------------------------
 # Transcribe audio using Whisper
 # --------------------------------------------------
-async def transcribe_audio(file: UploadFile) -> str:
+async def transcribe_audio(file: UploadFile, language: str | None = None) -> str:
     """
     Transcribes an uploaded audio file into text using OpenAI Whisper.
+    
+    Args:
+        file: The uploaded audio file
+        language: Optional ISO-639-1 language code (e.g., 'en', 'hi', 'es', 'fr', 'te', 'ur')
     """
 
     if not file:
@@ -63,10 +67,19 @@ async def transcribe_audio(file: UploadFile) -> str:
 
         # Send to Whisper
         with open(temp_path, "rb") as audio_file:
-            transcription = openai.audio.transcriptions.create(
-                file=audio_file,
-                model="whisper-1"
-            )
+            whisper_params = {
+                "file": audio_file,
+                "model": "whisper-1"
+            }
+            
+            # Add language parameter if provided
+            if language and language.lower() != "auto":
+                whisper_params["language"] = language
+                print(f"🌐 Whisper API: Using language '{language}'")
+            else:
+                print(f"🌐 Whisper API: Auto-detecting language")
+            
+            transcription = openai.audio.transcriptions.create(**whisper_params)
 
         if not transcription or not transcription.text:
             raise HTTPException(status_code=500, detail="Failed to transcribe audio")

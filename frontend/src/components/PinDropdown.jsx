@@ -25,7 +25,7 @@ const PinDropdown = ({ onSelect }) => {
   ];
 
   return (
-    <div className="absolute bottom-full left-0 mb-2 w-40 sm:w-48 max-h-96 overflow-y-auto bg-white dark:bg-gray-800 rounded-xl shadow-2xl border border-gray-100 dark:border-gray-700 z-50" style={{zIndex:999}}> 
+    <div className="absolute bottom-full left-0 mb-2 w-40 sm:w-48 max-h-96 overflow-y-auto bg-white dark:bg-gray-800 rounded-xl shadow-2xl border border-gray-100 dark:border-gray-700 z-30"> 
       <input
         type="file"
         multiple
@@ -43,7 +43,7 @@ const PinDropdown = ({ onSelect }) => {
             <div className={`p-2 rounded-full ${opt.bg} ${opt.color} group-hover:scale-110 transition-transform`}>
               {opt.icon}
             </div>
-<span className="text-black dark:text-gray-300 font-medium text-sm">
+<span className="text-black dark:text-gray-300 font-medium text-base">
   {opt.label}
 </span>
           </button>
