@@ -12,11 +12,13 @@ spec:
       labels:
         app: backend
     spec:
+    serviceAccountName: backend-sa
       containers:
         - name: backend
           image: 460678531020.dkr.ecr.us-east-1.amazonaws.com/pipeline-backend:latest
           ports:
             - containerPort: 8000
+            
           envFrom:
             - configMapRef:
                 name: backend-config
