@@ -17,7 +17,7 @@ spec:
         - name: backend
           image: 460678531020.dkr.ecr.us-east-1.amazonaws.com/pipeline-backend:latest
           ports:
-            - containerPort: 8000
+            - containerPort: 5000
             
           envFrom:
             - configMapRef:
